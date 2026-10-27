@@ -8,6 +8,26 @@
 
 先运行 `npm ci` 安装宿主投影使用的 Zod 校验依赖。客户端交互测试复用 Harness 已安装的 React、ReactDOM 和 jsdom；真实页面测试复用其 Playwright。
 
+## 从源码安装
+
+克隆仓库并安装依赖、打包：
+
+```sh
+git clone https://github.com/monster-cli/dsh-whileplay.git
+cd dsh-whileplay
+npm ci
+npm pack
+```
+
+`npm pack` 会自动构建并生成 `dsh-whileplay-0.2.0.tgz`。安装后重启 Web profile：
+
+```sh
+dsh plugin --profile web add ./dsh-whileplay-0.2.0.tgz
+dsh web
+```
+
+构建使用 Node.js 内置工具，浏览器中的 React 由 Harness 提供。
+
 ## 构建与基础测试
 
 在 Whileplay 项目根目录运行：
