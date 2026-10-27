@@ -4,6 +4,8 @@
 
 内置飞机大战、坦克大战和贪吃蛇。游戏运行在可移动、可缩放的悬浮窗口中，也可以切换成只显示游戏画面的极简模式。
 
+**v0.2.0 支持三款游戏与任务联动**：工具调用带来敌人或奖励目标，Step 结束送来道具。下载本版本安装包即可体验，也可使用无需模型请求的「联动演练」。
+
 ## 效果展示
 
 从聊天输入框旁打开「玩一小局」，体验飞机大战、坦克大战、贪吃蛇与极简模式。
@@ -20,16 +22,16 @@
 
 ### 1. 下载安装包
 
-下载 **[dsh-whileplay-0.1.0.tgz](https://github.com/monster-cli/dsh-whileplay/releases/download/v0.1.0/dsh-whileplay-0.1.0.tgz)**。
+下载 **[dsh-whileplay-0.2.0.tgz](https://github.com/monster-cli/dsh-whileplay/releases/download/v0.2.0/dsh-whileplay-0.2.0.tgz)**。
 
-版本说明见 [v0.1.0 Release](https://github.com/monster-cli/dsh-whileplay/releases/tag/v0.1.0)。安装插件使用 `.tgz` 附件；GitHub 自动提供的 Source code 压缩包用于源码开发。
+版本说明见 [v0.2.0 Release](https://github.com/monster-cli/dsh-whileplay/releases/tag/v0.2.0)。安装插件使用 `.tgz` 附件；GitHub 自动提供的 Source code 压缩包用于源码开发。
 
 ### 2. 安装到 Web profile
 
 在安装包所在目录打开终端，执行：
 
 ```sh
-dsh plugin --profile web add ./dsh-whileplay-0.1.0.tgz
+dsh plugin --profile web add ./dsh-whileplay-0.2.0.tgz
 ```
 
 这条命令将 Whileplay 添加到 Web profile 的插件依赖中。
@@ -37,7 +39,7 @@ dsh plugin --profile web add ./dsh-whileplay-0.1.0.tgz
 通过 npm 运行 Harness、没有全局 `dsh` 命令的用户，使用：
 
 ```sh
-npx @deepseek-ai/dsh plugin --profile web add ./dsh-whileplay-0.1.0.tgz
+npx @deepseek-ai/dsh plugin --profile web add ./dsh-whileplay-0.2.0.tgz
 ```
 
 ### 3. 打开游戏
@@ -56,13 +58,41 @@ dsh web
 
 | 游戏 | 操作 | 玩法 |
 | --- | --- | --- |
-| 飞机大战 | 左右方向键，或在画布上拖动 | 自动发射子弹，击落敌机每架 +10 分；撞到敌机结束本局 |
+| 飞机大战 | 上下左右方向键，或在画布上拖动 | 自动发射子弹，普通敌机 +10 分，工具小 Boss +100 分 |
 | 坦克大战 | 方向键移动转向，空格射击 | 击毁敌坦克每辆 +100 分，守卫底部基地 |
 | 贪吃蛇 | 方向键转向 | 吃食物增长，避开边界和自己 |
 
 坦克大战包含砖墙、钢墙和敌方坦克。砖墙可以逐块击碎，钢墙不可破坏，双方子弹可以互相抵消。玩家有 3 条生命，受击重生后短暂无敌；生命耗尽或基地被任意一方的子弹击毁时结束。
 
 游戏库支持搜索与分类，窗口和画布跟随 DSH 的浅色、深色主题。画布获得焦点后响应键盘操作，Escape 收起游戏窗口。
+
+## 任务变成游戏的一部分
+
+三款游戏共用当前会话的工具调用与 Step 完成事件，各自保留经典玩法：
+
+| 游戏 | 工具调用带来的目标 | Step 结束带来的道具 |
+| --- | --- | --- |
+| 飞机大战 | 按工具类型生成轰炸机、运输机或装甲机，可投弹、可击落 | 双发子弹、护盾、清屏炸弹 |
+| 坦克大战 | 从空闲入口驶入三血精英坦克，击毁 +200 分 | 连发、护盾、战场炸弹 |
+| 贪吃蛇 | 在空白格生成带工具名称的限时果实，吃到 +30 分并增长一格 | 双倍得分、护盾、减速 |
+
+**工具只负责触发生成。** 敌人或果实入场后按游戏规则行动、消失：工具完成或失败只更新任务状态，不让敌人突然退场，也不收走果实。游戏操作不会改变工具执行结果。工具目标同时最多两个，密集调用依次入场。
+
+每个新的 Step 结束产生一份补给。补给间隔至少 1.8 秒入场，避免铺满画面；需要玩家主动接住，拾取额外 +20 分。飞机道具向下飘落，坦克道具出现在可达的空闲通道，贪吃蛇道具出现在不占用蛇身和普通食物的空白格。坦克与贪吃蛇的道具、工具果实保留 12 秒。
+
+- **飞机双发 / 坦克连发 / 贪吃蛇双倍得分**：持续 8 秒，重复拾取刷新时长，不叠加。贪吃蛇双倍期间，普通食物、工具果实和补给拾取得分翻倍。
+- **护盾**：抵挡一次伤害，不叠加。贪吃蛇撞到边界或自身时，会消耗护盾并尝试自动转向相邻安全格；没有安全方向时仍结束本局。
+- **飞机清屏炸弹**：清除敌弹，击毁普通敌机，对工具 Boss 造成 6 点伤害。
+- **坦克战场炸弹**：清除敌方子弹、击毁场上敌坦克，保留地图墙体与基地。
+- **贪吃蛇减速**：持续 8 秒，降低移动速度，给转向留出更多时间。
+
+暂停期间，道具有效时间与持续效果均冻结。历史事件不会在打开窗口、重新开始或切换游戏时补发奖励。切换会话会清空本局战场；任务结束时自动暂停并显示本次工具数、完成数、失败数、目标完成数与得分。结束运行不等同于任务成功。
+
+### 不用调用模型，也能试联动
+
+在任意一款游戏里点击 **「联动演练」**。演练用本地模拟事件展示工具目标、Step 补给、工具失败和再次调用，不发送模型请求，不需要 API Key。
+
+演练第 1、4、7 秒依次触发三种 Step 道具，后续再重复一轮。坦克道具会等到有可达空位再入场；三款游戏都需要实际移动、射击或吃到道具来获得效果。真实任务运行中或等待用户操作时，演练按钮禁用；真实任务开始后会切回真实联动。
 
 ## 移动、缩放与极简模式
 
@@ -101,16 +131,17 @@ dsh plugin --profile web remove dsh-whileplay
 ```sh
 git clone https://github.com/monster-cli/dsh-whileplay.git
 cd dsh-whileplay
+npm ci
 npm pack
 ```
 
-`npm pack` 会先自动构建，再生成 `dsh-whileplay-0.1.0.tgz`。安装生成的包：
+`npm pack` 会先自动构建，再生成 `dsh-whileplay-0.2.0.tgz`。安装生成的包：
 
 ```sh
-dsh plugin --profile web add ./dsh-whileplay-0.1.0.tgz
+dsh plugin --profile web add ./dsh-whileplay-0.2.0.tgz
 ```
 
-构建使用 Node.js 内置工具，无需额外安装 npm 构建依赖；浏览器中的 React 由 Harness 提供。开发预览、测试和发布流程见 [开发指南](https://github.com/monster-cli/dsh-whileplay/blob/main/docs/DEVELOPMENT.md)。
+`npm ci` 安装宿主事件投影使用的数据校验依赖；构建使用 Node.js 内置工具，浏览器中的 React 由 Harness 提供。开发预览、测试和发布流程见 [开发指南](https://github.com/monster-cli/dsh-whileplay/blob/main/docs/DEVELOPMENT.md)。
 
 ## 反馈与许可证
 

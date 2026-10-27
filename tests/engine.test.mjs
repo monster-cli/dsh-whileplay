@@ -35,14 +35,35 @@ test('air battle uses a portrait field, moves horizontally and fires without a f
 
 test('air battle follows pointer steering, stays in bounds and ends on an enemy collision', () => {
   const g = createGame('plane')
-  const controls = input(); controls.pointer = true; controls.targetX = -500
-  stepGame(g, controls, 0.01); assert.equal(g.player.x, 0)
-  controls.targetX = 500; stepGame(g, controls, 0.01); assert.equal(g.player.x, g.width - g.player.w)
+  const controls = input(); controls.pointer = true; controls.targetX = -500; controls.targetY = -500
+  stepGame(g, controls, 0.01); assert.equal(g.player.x, 0); assert.equal(g.player.y, 0)
+  controls.targetX = 500; controls.targetY = 800
+  stepGame(g, controls, 0.01); assert.equal(g.player.x, g.width - g.player.w); assert.equal(g.player.y, g.height - g.player.h)
   controls.pointer = false
   g.enemies = [{ x: g.player.x, y: g.player.y + 15, w: 28, h: 30, speed: 100 }]
   stepGame(g, controls, 0.01)
   assert.equal(g.over, true)
   const time = g.time; advance(g, input()); assert.equal(g.time, time)
+})
+
+test('air battle moves vertically, keeps diagonal speed consistent and fires from its new position', () => {
+  const g = createGame('plane'), controls = input()
+  controls.keys.add('ArrowUp')
+  stepGame(g, controls, 0.05)
+  assert.equal(g.player.y, 387)
+  assert.ok(g.bullets[0].y < g.player.y)
+  controls.keys.clear(); controls.keys.add('ArrowDown')
+  stepGame(g, controls, 0.05); assert.equal(g.player.y, 398)
+  controls.keys.add('ArrowRight')
+  const before = { ...g.player }
+  stepGame(g, controls, 0.05)
+  assert.ok(Math.abs(Math.hypot(g.player.x - before.x, g.player.y - before.y) - 11) < 0.00001)
+  controls.keys.clear(); controls.keys.add('ArrowUp'); g.player.y = 1
+  stepGame(g, controls, 0.05); assert.equal(g.player.y, 0)
+  controls.keys.clear(); controls.keys.add('ArrowDown'); g.player.y = g.height - g.player.h - 1
+  stepGame(g, controls, 0.05); assert.equal(g.player.y, g.height - g.player.h)
+  controls.keys.add('ArrowUp')
+  stepGame(g, controls, 0.05); assert.equal(g.player.y, g.height - g.player.h)
 })
 
 test('a bullet destroys one enemy and awards ten points only once', () => {

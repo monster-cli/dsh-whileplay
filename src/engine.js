@@ -1,4 +1,6 @@
 import { createTankState, stepTank, drawTank } from './tank.js'
+import { createEscort, stepEscort, drawEscort } from './mission-game.js'
+import { stepGroundMission, snakeMissionPrize, collectSnakeMissionPrize, rescueMissionSnake, drawGroundMission } from './ground-mission.js'
 
 /** Game catalog owns display geometry and browsing categories. */
 export const GAME_CATALOG = [
@@ -15,13 +17,13 @@ const clamp = (n, low, high) => Math.max(low, Math.min(high, n))
 export function createGame(kind, random = Math.random) {
   const spec = GAME_CATALOG.find(item => item.id === kind)
   if (!spec) throw new Error(`Unknown game: ${kind}`)
-  const base = { kind, width: spec.width, height: spec.height, score: 0, over: false, time: 0 }
+  const base = { kind, width: spec.width, height: spec.height, score: 0, over: false, time: 0, escort: createEscort() }
   if (kind === 'snake') {
     const game = { ...base, body: [{ x: 8, y: 8 }, { x: 7, y: 8 }, { x: 6, y: 8 }], direction: { x: 1, y: 0 }, food: null, accumulator: 0 }
     placeFood(game, random)
     return game
   }
-  if (kind === 'plane') return { ...base, player: { x: 148, y: 398, w: 24, h: 32 }, enemies: [], bullets: [], bursts: [], cooldown: 0, spawn: 0.35 }
+  if (kind === 'plane') return { ...base, player: { x: 148, y: 398, w: 24, h: 32 }, enemies: [], bullets: [], bursts: [], cooldown: 0, spawn: 0.35, escort: createEscort() }
   if (kind === 'tank') return createTankState(base)
   throw new Error(`Unknown game: ${kind}`)
 }
@@ -29,7 +31,12 @@ export function createGame(kind, random = Math.random) {
 function placeFood(game, random) {
   const free = []
   for (let y = 0; y < 16; y++) for (let x = 0; x < 24; x++) {
-    if (!game.body.some(part => same(part, { x, y }))) free.push({ x, y })
+    if (!game.body.some(part => same(part, { x, y })) && !game.escort.drops.some(drop => !drop.hit && drop.cellX === x && drop.cellY === y)) free.push({ x, y })
+  }
+  // On a nearly full board, retire a bonus rather than letting it block the next ordinary food.
+  if (!free.length) {
+    const drop = game.escort.drops.find(drop => !drop.hit && !game.body.some(part => same(part, { x: drop.cellX, y: drop.cellY })))
+    if (drop) { drop.hit = true; free.push({ x: drop.cellX, y: drop.cellY }) }
   }
   if (!free.length) { game.over = true; game.food = null; return }
   game.food = free[Math.floor(random() * free.length)]
@@ -49,26 +56,38 @@ export function stepGame(game, input, seconds, random = Math.random) {
   const dt = clamp(seconds, 0, 0.05)
   game.time += dt
   if (game.kind === 'snake') {
+    stepGroundMission(game, dt, random)
     game.accumulator += dt
-    if (game.accumulator < Math.max(0.075, 0.15 - game.score * 0.001)) return
+    if (game.accumulator < Math.max(0.075, 0.15 - game.score * 0.001) * (game.escort.slow > 0 ? 1.6 : 1)) return
     game.accumulator = 0
     const directions = { ArrowUp: { x: 0, y: -1 }, ArrowDown: { x: 0, y: 1 }, ArrowLeft: { x: -1, y: 0 }, ArrowRight: { x: 1, y: 0 } }
     const next = directions[input.direction]
     if (next && next.x !== -game.direction.x && next.y !== -game.direction.y) game.direction = next
     const head = { x: game.body[0].x + game.direction.x, y: game.body[0].y + game.direction.y }
     const eat = same(head, game.food)
-    const body = eat ? game.body : game.body.slice(0, -1)
-    if (head.x < 0 || head.x >= 24 || head.y < 0 || head.y >= 16 || body.some(part => same(part, head))) { game.over = true; return }
+    const prize = snakeMissionPrize(game, head)
+    const grows = eat || prize?.type === 'bounty'
+    const body = grows ? game.body : game.body.slice(0, -1)
+    if (head.x < 0 || head.x >= 24 || head.y < 0 || head.y >= 16 || body.some(part => same(part, head))) {
+      if (!rescueMissionSnake(game, input)) game.over = true
+      return
+    }
     game.body.unshift(head)
-    if (eat) { game.score += 10; placeFood(game, random) } else game.body.pop()
+    if (eat) { game.score += 10 * (game.escort.multiplier > 0 ? 2 : 1); placeFood(game, random) }
+    if (prize) collectSnakeMissionPrize(game, prize)
+    if (!grows) game.body.pop()
   } else if (game.kind === 'plane') {
     const player = game.player
     const horizontal = (input.keys.has('ArrowRight') ? 1 : 0) - (input.keys.has('ArrowLeft') ? 1 : 0)
-    player.x = clamp(player.x + horizontal * 220 * dt, 0, game.width - player.w)
+    const vertical = (input.keys.has('ArrowDown') ? 1 : 0) - (input.keys.has('ArrowUp') ? 1 : 0)
+    const distance = 220 * dt / (Math.hypot(horizontal, vertical) || 1)
+    player.x = clamp(player.x + horizontal * distance, 0, game.width - player.w)
+    player.y = clamp(player.y + vertical * distance, 0, game.height - player.h)
     if (input.pointer && Number.isFinite(input.targetX)) player.x = clamp(input.targetX - player.w / 2, 0, game.width - player.w)
+    if (input.pointer && Number.isFinite(input.targetY)) player.y = clamp(input.targetY - player.h / 2, 0, game.height - player.h)
     game.cooldown -= dt
     if (game.cooldown <= 0) {
-      game.bullets.push({ x: player.x + player.w / 2 - 2, y: player.y - 10, w: 4, h: 12 })
+      for (const offset of game.escort.dual > 0 ? [-8, 8] : [0]) game.bullets.push({ x: player.x + player.w / 2 - 2 + offset, y: player.y - 10, w: 4, h: 12 })
       game.cooldown += 0.16
     }
     game.spawn -= dt
@@ -76,20 +95,26 @@ export function stepGame(game, input, seconds, random = Math.random) {
       game.enemies.push({ x: 8 + random() * (game.width - 44), y: -34, w: 28, h: 30, speed: 85 + random() * 55 + Math.min(game.score / 10, 65) })
       game.spawn += Math.max(0.32, 0.85 - game.score / 1200)
     }
+    stepEscort(game, dt, random)
     for (const burst of game.bursts) burst.life -= dt
     for (const bullet of game.bullets) bullet.y -= 380 * dt
     for (const enemy of game.enemies) {
+      if (enemy.hit) continue
       enemy.y += enemy.speed * dt
       const bullet = game.bullets.find(shot => !shot.hit && overlaps(enemy, shot))
       if (bullet) {
         bullet.hit = true; enemy.hit = true; game.score += 10
         game.bursts.push({ x: enemy.x + enemy.w / 2, y: enemy.y + enemy.h / 2, life: 0.3 })
-      } else if (overlaps(player, enemy)) game.over = true
+      } else if (overlaps(player, enemy) && game.escort.invincible <= 0) {
+        if (game.escort.shield) { game.escort.shield = 0; game.escort.invincible = 1.5; enemy.hit = true }
+        else game.over = true
+      }
     }
     game.bullets = game.bullets.filter(shot => !shot.hit && shot.y + shot.h > 0)
     game.enemies = game.enemies.filter(enemy => !enemy.hit && enemy.y < game.height + enemy.h)
     game.bursts = game.bursts.filter(burst => burst.life > 0)
   } else {
+    stepGroundMission(game, dt, random)
     stepTank(game, input, dt, random)
   }
 }
@@ -105,6 +130,7 @@ export function drawGame(ctx, game, palette = DEFAULT_PALETTE) {
   if (game.kind === 'snake') {
     game.body.forEach((p, i) => { ctx.fillStyle = i ? palette.accent : palette.ink; ctx.fillRect(p.x * 20 + 2, p.y * 20 + 2, 16, 16) })
     if (game.food) { ctx.fillStyle = palette.food; ctx.beginPath(); ctx.arc(game.food.x * 20 + 10, game.food.y * 20 + 10, 6, 0, Math.PI * 2); ctx.fill() }
+    drawGroundMission(ctx, game, palette)
   } else if (game.kind === 'plane') {
     ctx.fillStyle = palette.accent
     for (const shot of game.bullets) ctx.fillRect(shot.x, shot.y, shot.w, shot.h)
@@ -121,9 +147,11 @@ export function drawGame(ctx, game, palette = DEFAULT_PALETTE) {
     for (const burst of game.bursts) {
       ctx.strokeStyle = palette.food; ctx.lineWidth = 2
       ctx.beginPath(); ctx.arc(burst.x, burst.y, 5 + (0.3 - burst.life) * 45, 0, Math.PI * 2); ctx.stroke()
-      ctx.fillStyle = palette.ink; ctx.font = '12px sans-serif'; ctx.fillText('+10', burst.x - 10, burst.y - 16 - (0.3 - burst.life) * 30)
+      ctx.fillStyle = palette.ink; ctx.font = '12px sans-serif'; ctx.fillText(`+${burst.points || 10}`, burst.x - 10, burst.y - 16 - (0.3 - burst.life) * 30)
     }
+    drawEscort(ctx, game, palette)
   } else {
     drawTank(ctx, game, palette)
+    drawGroundMission(ctx, game, palette)
   }
 }

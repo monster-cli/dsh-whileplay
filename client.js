@@ -59,6 +59,7 @@ function tankBurst(game, rect) {
 
 function hitPlayerTank(game) {
   if (game.invulnerable > 0) return
+  if (game.escort?.shield) { game.escort.shield = 0; game.invulnerable = 1.5; return }
   tankBurst(game, game.player)
   game.lives--
   if (game.lives <= 0) { game.over = true; return }
@@ -85,7 +86,7 @@ function stepTankBullet(game, shot, dt) {
     }
     if (shot.team === 'player') {
       const enemy = game.enemies.find(item => !item.destroyed && tankOverlaps(shot, item))
-      if (enemy) { shot.hit = true; enemy.destroyed = true; game.score += 100; tankBurst(game, enemy) }
+      if (enemy) { shot.hit = true; damageMissionTank(game, enemy) }
     } else if (tankOverlaps(shot, game.player)) { shot.hit = true; hitPlayerTank(game) }
     if (!shot.hit) {
       const opposing = game.bullets.find(other => other !== shot && !other.hit && other.team !== shot.team && tankOverlaps(shot, other))
@@ -105,7 +106,7 @@ function stepTank(game, input, dt, random) {
   const key = held.includes(input.direction) ? input.direction : held.at(-1)
   if (key) moveTank(game, game.player, keyDirections[key], 98 * dt)
   if ((input.keys.has('Space') || input.pointer) && game.player.cooldown <= 0) {
-    shootTank(game, game.player, 'player'); game.player.cooldown = 0.3
+    shootTank(game, game.player, 'player'); game.player.cooldown = game.escort?.dual > 0 ? 0.13 : 0.3
   }
   if (game.spawn <= 0 && game.enemies.length < 4) {
     const start = Math.floor(random() * 3)
@@ -162,7 +163,14 @@ function drawTank(ctx, game, palette) {
     ctx.fillStyle = color; ctx.fillRect(-2, -18, 4, 18)
     ctx.restore()
   }
-  game.enemies.forEach(enemy => tank(enemy, palette.enemy))
+  game.enemies.forEach(enemy => {
+    tank(enemy, enemy.missionCall ? palette.food : palette.enemy)
+    if (enemy.missionCall) {
+      ctx.strokeStyle = palette.food; ctx.strokeRect(enemy.x - 2, enemy.y - 2, 30, 30)
+      ctx.fillStyle = palette.ink; ctx.font = '10px sans-serif'; ctx.textAlign = 'center'
+      ctx.fillText(`${enemy.missionCall.name.slice(0, 12)} · ${enemy.hp}`, Math.max(50, Math.min(game.width - 50, enemy.x + 13)), Math.max(12, enemy.y - 6)); ctx.textAlign = 'left'
+    }
+  })
   if (!game.over || game.lives > 0) tank(game.player, palette.accent)
   if (game.invulnerable > 0 && !game.over) {
     ctx.strokeStyle = palette.accent; ctx.lineWidth = 1
@@ -173,6 +181,348 @@ function drawTank(ctx, game, palette) {
     ctx.strokeStyle = palette.food; ctx.lineWidth = 2
     ctx.beginPath(); ctx.arc(burst.x, burst.y, 3 + (0.3 - burst.life) * 45, 0, Math.PI * 2); ctx.stroke()
   }
+}
+
+/** Mission arrivals obey the same entrance occupancy rules as ordinary tanks. */
+function spawnMissionTank(game, call) {
+  if (game.enemies.filter(enemy => enemy.missionCall && !enemy.destroyed).length >= 2 || game.enemies.length >= 6) return false
+  for (const x of [3, 195, 387]) {
+    const enemy = { x, y: 3, w: 26, h: 26, direction: 'down', cooldown: 1, decision: 1, hp: 3, missionCall: call, missionTurn: game.escort.turn }
+    if (tankBlocked(game, enemy, enemy)) continue
+    game.enemies.push(enemy); return true
+  }
+  return false
+}
+
+function damageMissionTank(game, enemy, amount = 1) {
+  if (enemy.destroyed) return
+  enemy.hp = (enemy.hp ?? 1) - amount
+  if (enemy.hp > 0) return
+  enemy.destroyed = true; game.score += enemy.missionCall ? 200 : 100; tankBurst(game, enemy)
+  if (enemy.missionCall) {
+    enemy.missionCall.defeated = true
+    if (enemy.missionTurn === game.escort.turn) game.escort.kills++
+  }
+}
+
+/** Flood-fill lanes reachable from the player; supplies never appear inside walls or the base. */
+function missionTankCells(game) {
+  const start = { col: Math.round((game.player.x - 3) / 32), row: Math.round((game.player.y - 3) / 32) }
+  const queue = [start], visited = new Set([`${start.col},${start.row}`]), free = []
+  for (let i = 0; i < queue.length; i++) {
+    const { col, row } = queue[i]
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const c = col + dx, r = row + dy, key = `${c},${r}`
+      if (c < 0 || c >= 13 || r < 0 || r >= 13 || visited.has(key)) continue
+      visited.add(key)
+      const rect = { x: c * 32 + 3, y: r * 32 + 3, w: 26, h: 26 }
+      if (tankBlocked(game, rect, game.player)) continue
+      queue.push({ col: c, row: r })
+      if (!tankOverlaps(rect, game.player) && !game.escort.drops.some(drop => tankOverlaps(rect, drop))) free.push({ x: c * 32 + 6, y: r * 32 + 6 })
+    }
+  }
+  return free
+}
+
+/** Tool names select appearance only; never inspect arguments or execute a tool. */
+function toolAircraft(name) {
+  const value = name.toLowerCase()
+  if (/search|browse|web|fetch/.test(value)) return { type: 'search', label: '搜索轰炸机', en: 'Search bomber', hp: 7 }
+  if (/read|list|glob|find|ls|cat/.test(value)) return { type: 'read', label: '读取运输机', en: 'Read transport', hp: 5 }
+  if (/write|edit|patch|replace/.test(value)) return { type: 'edit', label: '工程装甲机', en: 'Engineering armor', hp: 9 }
+  if (/exec|shell|bash|terminal|test|command/.test(value)) return { type: 'command', label: '命令重装机', en: 'Command heavy', hp: 11 }
+  return { type: 'tool', label: '工具巡航机', en: 'Tool cruiser', hp: 6 }
+}
+
+function createEscort() {
+  return { turn: null, seq: -1, running: false, demo: false, calls: [], queue: [], bosses: [], shots: [], drops: [], kills: 0, total: 0, completed: 0, failed: 0, summary: null, notice: '', noticeUntil: 0, invincible: 0, shield: 0, dual: 0, bombFlash: 0, stepsSeen: null, pendingSupply: 0, supplyCooldown: 0, supplyIndex: 0, slow: 0, multiplier: 0 }
+}
+
+/** Whole snapshots may repeat or skip frames. Baseline completed history is never spawned. */
+function syncEscort(game, snapshot, baseline = false) {
+  if (!game.escort || !snapshot || snapshot.turn < 0) return
+  let m = game.escort
+  if (m.turn !== snapshot.turn) {
+    const battlefield = { bosses: m.bosses, shots: m.shots, drops: m.drops, shield: m.shield, invincible: m.invincible, dual: m.dual, bombFlash: m.bombFlash, pendingSupply: m.pendingSupply, supplyCooldown: m.supplyCooldown, supplyIndex: m.supplyIndex, slow: m.slow, multiplier: m.multiplier }
+    game.escort = m = createEscort()
+    Object.assign(m, battlefield)
+    m.turn = snapshot.turn
+    baseline = baseline || !snapshot.running
+  }
+  if (snapshot.seq <= m.seq) return
+  const oldSeq = m.seq
+  m.seq = snapshot.seq; m.running = snapshot.running
+  m.total = snapshot.total; m.completed = snapshot.completed; m.failed = snapshot.failed
+  const steps = snapshot.steps ?? 0
+  if (m.stepsSeen === null) m.stepsSeen = baseline ? steps : 0
+  m.pendingSupply += Math.max(0, steps - m.stepsSeen)
+  m.stepsSeen = Math.max(m.stepsSeen, steps)
+  for (const call of snapshot.calls) {
+    let record = m.calls.find(row => row.id === call.id)
+    const phaseChanged = !record || record.phase !== call.phase
+    if (!record) {
+      record = { ...call, ...toolAircraft(call.name), defeated: false }
+      m.calls.push(record)
+      if (snapshot.running && (call.phase === 'running' || (!baseline && call.seq > oldSeq))) {
+        // Bound visual backlog without losing the task's real totals.
+        if (m.queue.length < 12) m.queue.push(record)
+      }
+    } else record.phase = call.phase
+    if (call.phase !== 'running' && phaseChanged) {
+      m.notice = `${call.name.slice(0, 24)} · ${call.phase === 'error' ? '失败' : '完成'}`
+      m.noticeUntil = game.time + 3
+    }
+  }
+  m.calls = m.calls.filter(call => snapshot.calls.some(row => row.id === call.id))
+  if (!snapshot.running && !baseline && !m.summary) {
+    m.summary = { total: m.total, completed: m.completed, failed: m.failed, kills: m.kills, score: game.score }
+    m.queue = []
+    m.notice = '本次任务已结束'; m.noticeUntil = game.time + 4
+  }
+}
+
+const hit = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+function stepEscort(game, dt, random = Math.random) {
+  const m = game.escort
+  m.invincible = Math.max(0, m.invincible - dt)
+  m.dual = Math.max(0, m.dual - dt)
+  m.bombFlash = Math.max(0, m.bombFlash - dt)
+  m.supplyCooldown -= dt
+  if (m.pendingSupply > 0 && m.supplyCooldown <= 0 && m.drops.length < 6) {
+    const roll = random()
+    const type = m.demo ? ['dual', 'shield', 'bomb'][m.supplyIndex % 3] : roll < .65 ? 'dual' : roll < .9 ? 'shield' : 'bomb'
+    const x = m.demo ? [148, 232, 64][m.supplyIndex % 3] : 24 + random() * (game.width - 72)
+    m.drops.push({ x, y: -24, w: 24, h: 24, type })
+    m.pendingSupply--; m.supplyIndex++; m.supplyCooldown = 1.8
+    m.notice = `Step 完成 · ${supplyName(type, false)}补给入场`; m.noticeUntil = game.time + 3
+  }
+  while (m.running && m.bosses.length < 2 && m.queue.length) {
+    const call = m.queue.shift(), slot = m.bosses.some(boss => boss.slot === 0) ? 1 : 0
+    m.bosses.push({ call, turn: m.turn, slot, x: slot ? 202 : 38, y: -60, w: 64, h: 42, hp: call.hp, fire: 2, age: 0, speed: 85 })
+    m.notice = `${call.label} · ${call.name.slice(0, 24)}`; m.noticeUntil = game.time + 3
+  }
+  for (const boss of m.bosses) {
+    boss.age += dt
+    // Once spawned, flight, firing and lifetime belong entirely to the game.
+    boss.y += boss.speed * dt
+    boss.x = (boss.slot ? 202 : 38) + Math.sin(boss.age * 1.3) * 25
+    if (boss.y >= game.height + boss.h) { boss.gone = true; continue }
+    boss.fire -= dt
+    if (boss.fire <= 0 && boss.y > 20) {
+      for (const vx of boss.call.type === 'search' ? [-34, 0, 34] : [0]) m.shots.push({ x: boss.x + boss.w / 2, y: boss.y + boss.h, w: 6, h: 9, vx })
+      boss.fire = 2.4
+    }
+    for (const shot of game.bullets) if (!shot.hit && hit(boss, shot)) {
+      shot.hit = true; boss.hp--
+      if (boss.hp <= 0) {
+        defeatEscortBoss(game, boss)
+        break
+      }
+    }
+    if (!boss.gone && hit(game.player, boss)) damage(game)
+  }
+  for (const shot of m.shots) { shot.y += 115 * dt; shot.x += shot.vx * dt; if (hit(game.player, shot)) { shot.hit = true; damage(game) } }
+  for (const drop of m.drops) {
+    drop.y += 90 * dt
+    if (hit(game.player, drop)) {
+      drop.hit = true; game.score += 20
+      const type = drop.type || 'shield'
+      if (type === 'dual') m.dual = 8
+      else if (type === 'shield') m.shield = 1
+      else {
+        m.shots = []; m.bombFlash = .35
+        for (const enemy of game.enemies) if (!enemy.hit) {
+          enemy.hit = true; game.score += 10
+          game.bursts.push({ x: enemy.x + enemy.w / 2, y: enemy.y + enemy.h / 2, life: .3 })
+        }
+        for (const boss of m.bosses) if (!boss.gone) { boss.hp -= 6; if (boss.hp <= 0) defeatEscortBoss(game, boss) }
+      }
+      m.notice = `补给 +20 · ${supplyName(type, false)}${type === 'dual' ? ' 8 秒' : ''}`; m.noticeUntil = game.time + 3
+    }
+  }
+  m.bosses = m.bosses.filter(boss => !boss.gone)
+  m.shots = m.shots.filter(shot => !shot.hit && shot.y < game.height && shot.x > 0 && shot.x < game.width)
+  m.drops = m.drops.filter(drop => !drop.hit && drop.y < game.height)
+}
+function supplyName(type, en) {
+  return ({ dual: en ? 'Twin shot' : '双发', shield: en ? 'Shield' : '护盾', bomb: en ? 'Bomb' : '清屏炸弹' })[type]
+}
+function defeatEscortBoss(game, boss) {
+  if (boss.gone) return
+  const m = game.escort
+  boss.gone = true; boss.call.defeated = true
+  if (boss.turn === m.turn) m.kills++
+  game.score += 100
+  game.bursts.push({ x: boss.x + 32, y: boss.y + 21, life: .3, points: 100 })
+  m.drops.push({ x: boss.x + 32, y: boss.y + 42, w: 12, h: 12 })
+}
+function damage(game) {
+  const m = game.escort
+  if (m.invincible > 0) return
+  if (m.shield) { m.shield = 0; m.invincible = 1.5 }
+  else game.over = true
+}
+
+function drawEscort(ctx, game, p) {
+  const m = game.escort, en = game.language === 'en'
+  for (const boss of m.bosses) {
+    const { x, y, w, h } = boss
+    ctx.fillStyle = boss.call.phase === 'error' ? p.food : p.enemy
+    ctx.beginPath(); ctx.moveTo(x + w / 2, y + h); ctx.lineTo(x + w * .62, y + h * .5); ctx.lineTo(x + w, y + h * .35); ctx.lineTo(x + w, y + 4); ctx.lineTo(x + w * .6, y + 12); ctx.lineTo(x + w * .57, y); ctx.lineTo(x + w * .43, y); ctx.lineTo(x + w * .4, y + 12); ctx.lineTo(x, y + 4); ctx.lineTo(x, y + h * .35); ctx.lineTo(x + w * .38, y + h * .5); ctx.closePath(); ctx.fill()
+    ctx.fillStyle = p.background
+    if (boss.call.type === 'read') ctx.fillRect(x + 24, y + 12, 16, 12)
+    else if (boss.call.type === 'edit') { ctx.fillRect(x + 26, y + 10, 12, 4); ctx.fillRect(x + 26, y + 19, 12, 4) }
+    else if (boss.call.type === 'command') { ctx.fillRect(x + 7, y + 13, 8, 15); ctx.fillRect(x + 49, y + 13, 8, 15) }
+    ctx.fillStyle = p.grid; ctx.fillRect(x, y - 6, w, 3)
+    ctx.fillStyle = p.accent; ctx.fillRect(x, y - 6, w * Math.max(0, boss.hp / boss.call.hp), 3)
+    ctx.font = '10px sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = p.ink
+    ctx.fillText(en ? boss.call.en : boss.call.label, x + 32, y - 12)
+    const phase = boss.call.phase === 'running' ? '' : boss.call.phase === 'error' ? (en ? 'Failed' : '失败') : (en ? 'Done' : '完成')
+    ctx.fillText(`${boss.call.name.slice(0, 16)}${phase ? ` · ${phase}` : ''}`, x + 32, y + h + 13)
+  }
+  ctx.textAlign = 'left'
+  ctx.fillStyle = p.food
+  for (const shot of m.shots) ctx.fillRect(shot.x, shot.y, shot.w, shot.h)
+  for (const drop of m.drops) {
+    ctx.fillStyle = drop.type === 'dual' ? p.accent : p.food
+    ctx.fillRect(drop.x, drop.y, drop.w, drop.h)
+    ctx.fillStyle = p.background; ctx.font = 'bold 14px sans-serif'; ctx.textAlign = 'center'
+    ctx.fillText(drop.type === 'dual' ? 'Ⅱ' : drop.type === 'bomb' ? 'B' : '+', drop.x + drop.w / 2, drop.y + drop.h / 2 + 5)
+    if (drop.type) { ctx.font = '10px sans-serif'; ctx.fillStyle = p.ink; ctx.fillText(supplyName(drop.type, en), drop.x + drop.w / 2, drop.y + drop.h + 12) }
+  }
+  ctx.textAlign = 'left'
+  if (m.bombFlash) { ctx.fillStyle = p.food; ctx.globalAlpha = m.bombFlash / .35 * .3; ctx.fillRect(0, 0, game.width, game.height); ctx.globalAlpha = 1 }
+  if (m.shield || m.invincible) { ctx.strokeStyle = p.accent; ctx.beginPath(); ctx.arc(game.player.x + 12, game.player.y + 16, 23, 0, Math.PI * 2); ctx.stroke() }
+  if (m.turn === null) return
+  ctx.fillStyle = p.background; ctx.globalAlpha = .92; ctx.fillRect(0, 0, game.width, 44); ctx.fillRect(0, game.height - 46, game.width, 46); ctx.globalAlpha = 1
+  ctx.font = '11px sans-serif'; ctx.fillStyle = p.ink
+  ctx.fillText(`${m.demo ? (en ? 'DEMO' : '演练') : (en ? 'LIVE' : '任务联动')} · ${m.completed}/${m.total} · ${en ? 'Down' : '击落'} ${m.kills}${m.queue.length ? ` · +${m.queue.length}` : ''}`, 10, 19)
+  ctx.fillStyle = p.accent; ctx.font = '10px sans-serif'
+  ctx.fillText(`Step ${m.stepsSeen ?? 0}${m.dual > 0 ? ` · ${supplyName('dual', en)} ${Math.ceil(m.dual)}s` : ''}${m.shield ? ` · ${supplyName('shield', en)}` : ''}${m.pendingSupply ? ` · ${en ? 'Supplies' : '补给待入场'} +${m.pendingSupply}` : ''}`, 10, 35)
+  const markers = m.calls.filter(call => call.defeated).slice(-3)
+  ctx.font = '10px sans-serif'
+  markers.forEach((call, i) => { ctx.fillStyle = call.phase === 'running' ? p.food : call.phase === 'error' ? p.enemy : p.accent; ctx.fillText(`${call.phase === 'running' ? '◌' : call.phase === 'error' ? '!' : '✓'} ${call.name.slice(0, 12)}`, 10 + i * 103, game.height - 29) })
+  if (m.noticeUntil > game.time) { ctx.fillStyle = p.ink; ctx.fillText(en ? (m.summary ? 'Task ended' : 'Tool activity updated') : m.notice, 10, game.height - 11) }
+  ctx.textAlign = 'left'
+}
+
+/** Explicit offline rehearsal using the exact same snapshot-to-game adapter. */
+function demoMission(time) {
+  const entries = [
+    ['demo-search', 'web_search', 0, 7, false], ['demo-read', 'read_file', 2, 9, false],
+    ['demo-edit', 'apply_patch', 8, 16, false], ['demo-test', 'run_tests', 11, 18, true], ['demo-retry', 'run_tests', 19, 27, false],
+  ]
+  const calls = entries.filter(([, , start]) => time >= start).map(([id, name, start, end, failed]) => ({ id, name, phase: time < end ? 'running' : failed ? 'error' : 'done', seq: time < end ? start + 1 : end + 1 }))
+  const steps = [1, 4, 7, 12, 17, 21].filter(at => time >= at).length
+  return { turn: 0, seq: Math.floor(time * 20), running: time < 29, total: calls.length, completed: calls.filter(call => call.phase !== 'running').length, failed: calls.filter(call => call.phase === 'error').length, calls, steps }
+}
+
+
+const groundHit = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+const groundNames = { rapid: ['连发', 'Rapid fire'], shield: ['护盾', 'Shield'], bomb: ['炸弹', 'Bomb'], double: ['双倍', 'Double score'], slow: ['减速', 'Slow'], bounty: ['工具果实', 'Tool fruit'] }
+
+function snakeMissionCells(game) {
+  const cells = []
+  for (let y = 0; y < 16; y++) for (let x = 0; x < 24; x++) {
+    if (game.body.some(part => part.x === x && part.y === y) || (game.food?.x === x && game.food?.y === y)) continue
+    if (game.escort.drops.some(drop => !drop.hit && drop.cellX === x && drop.cellY === y)) continue
+    cells.push({ x: x * 20 + 2, y: y * 20 + 2, cellX: x, cellY: y })
+  }
+  return cells
+}
+
+/** All event-driven objects use bounded game-time lifetimes, independent of tool results. */
+function stepGroundMission(game, dt, random = Math.random) {
+  const m = game.escort
+  m.dual = Math.max(0, m.dual - dt); m.slow = Math.max(0, m.slow - dt); m.multiplier = Math.max(0, m.multiplier - dt)
+  m.bombFlash = Math.max(0, m.bombFlash - dt); m.supplyCooldown -= dt
+  for (const drop of m.drops) drop.ttl -= dt
+  m.drops = m.drops.filter(drop => !drop.hit && drop.ttl > 0)
+  if (game.kind === 'tank') {
+    if (m.queue.length && spawnMissionTank(game, m.queue[0])) m.queue.shift()
+  } else if (m.queue.length && m.drops.filter(drop => drop.type === 'bounty').length < 2) {
+    const cells = snakeMissionCells(game)
+    if (cells.length) {
+      const call = m.queue.shift(), cell = cells[Math.floor(random() * cells.length)]
+      m.drops.push({ ...cell, w: 16, h: 16, type: 'bounty', ttl: 12, call, turn: m.turn })
+    }
+  }
+  if (m.pendingSupply > 0 && m.supplyCooldown <= 0 && m.drops.length < 6) {
+    const cells = game.kind === 'tank' ? missionTankCells(game) : snakeMissionCells(game)
+    if (cells.length) {
+      const types = game.kind === 'tank' ? ['rapid', 'shield', 'bomb'] : ['double', 'shield', 'slow']
+      const roll = random(), type = types[m.demo ? m.supplyIndex % 3 : roll < .65 ? 0 : roll < .9 ? 1 : 2]
+      // Near-player reachable cells in tank demos; no board alteration is needed for either game.
+      const cell = cells[m.demo && game.kind === 'tank' ? 0 : Math.floor(random() * cells.length)]
+      m.drops.push({ ...cell, w: game.kind === 'tank' ? 20 : 16, h: game.kind === 'tank' ? 20 : 16, ttl: 12, type })
+      m.pendingSupply--; m.supplyIndex++; m.supplyCooldown = 1.8
+      m.notice = `Step 完成 · ${groundNames[type][0]}入场`; m.noticeUntil = game.time + 3
+    }
+  }
+  if (game.kind === 'tank') {
+    for (const drop of m.drops) if (!drop.hit && groundHit(game.player, drop)) {
+      drop.hit = true; game.score += 20
+      if (drop.type === 'rapid') m.dual = 8
+      else if (drop.type === 'shield') m.shield = 1
+      else {
+        game.bullets = game.bullets.filter(shot => shot.team === 'player'); m.bombFlash = .35
+        for (const enemy of game.enemies) damageMissionTank(game, enemy, 3)
+        game.enemies = game.enemies.filter(enemy => !enemy.destroyed)
+      }
+      m.notice = `拾取${groundNames[drop.type][0]} +20`; m.noticeUntil = game.time + 3
+    }
+    m.drops = m.drops.filter(drop => !drop.hit)
+  }
+}
+
+function snakeMissionPrize(game, head) {
+  return game.escort.drops.find(drop => !drop.hit && drop.cellX === head.x && drop.cellY === head.y)
+}
+
+function collectSnakeMissionPrize(game, drop) {
+  if (!drop || drop.hit) return
+  const m = game.escort
+  drop.hit = true; game.score += (drop.type === 'bounty' ? 30 : 20) * (m.multiplier > 0 ? 2 : 1)
+  if (drop.type === 'bounty') { drop.call.defeated = true; if (drop.turn === m.turn) m.kills++ }
+  else if (drop.type === 'double') m.multiplier = 8
+  else if (drop.type === 'shield') m.shield = 1
+  else if (drop.type === 'slow') m.slow = 8
+  m.notice = `${groundNames[drop.type][0]}已拾取`; m.noticeUntil = game.time + 3
+}
+
+/** One shield rescues a collision by selecting a free adjacent direction; trapped snakes still end. */
+function rescueMissionSnake(game, input) {
+  if (!game.escort.shield) return false
+  const head = game.body[0], body = game.body.slice(0, -1)
+  for (const direction of [{ x: 0, y: 1 }, { x: 0, y: -1 }, { x: 1, y: 0 }, { x: -1, y: 0 }]) {
+    const x = head.x + direction.x, y = head.y + direction.y
+    if (x < 0 || x >= 24 || y < 0 || y >= 16 || body.some(part => part.x === x && part.y === y)) continue
+    game.escort.shield = 0; game.direction = direction; input.direction = null
+    game.escort.notice = '护盾生效 · 自动转向'; game.escort.noticeUntil = game.time + 3
+    return true
+  }
+  return false
+}
+
+function drawGroundMission(ctx, game, p) {
+  const m = game.escort, en = game.language === 'en'
+  for (const drop of m.drops) if (!drop.hit) {
+    ctx.fillStyle = drop.type === 'bounty' ? p.food : p.accent; ctx.fillRect(drop.x, drop.y, drop.w, drop.h)
+    ctx.fillStyle = p.background; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center'
+    ctx.fillText(({ rapid: 'Ⅱ', double: '×2', shield: '+', bomb: 'B', slow: 'S', bounty: '★' })[drop.type], drop.x + drop.w / 2, drop.y + drop.h / 2 + 4)
+    ctx.fillStyle = p.ink; ctx.font = '9px sans-serif'
+    const label = drop.type === 'bounty' ? drop.call.name.slice(0, 14) : groundNames[drop.type][Number(en)]
+    ctx.fillText(`${label} ${Math.ceil(drop.ttl)}s`, Math.max(45, Math.min(game.width - 45, drop.x + drop.w / 2)), drop.y < 26 ? drop.y + drop.h + 11 : drop.y - 4)
+  }
+  ctx.textAlign = 'left'
+  if (m.bombFlash) { ctx.fillStyle = p.food; ctx.globalAlpha = m.bombFlash / .35 * .3; ctx.fillRect(0, 0, game.width, game.height); ctx.globalAlpha = 1 }
+  if (m.turn === null) return
+  const buffs = [m.dual > 0 ? `${en ? 'Rapid' : '连发'} ${Math.ceil(m.dual)}s` : '', m.multiplier > 0 ? `×2 ${Math.ceil(m.multiplier)}s` : '', m.slow > 0 ? `${en ? 'Slow' : '减速'} ${Math.ceil(m.slow)}s` : '', m.shield ? (en ? 'Shield' : '护盾') : ''].filter(Boolean)
+  ctx.font = '10px sans-serif'
+  const text = `${m.demo ? (en ? 'DEMO' : '演练') : (en ? 'LIVE' : '任务')} · ${m.completed}/${m.total} · Step ${m.stepsSeen ?? 0}${buffs.length ? ` · ${buffs.join(' · ')}` : ''}`
+  const width = Math.min(game.width - 8, (ctx.measureText(text)?.width ?? text.length * 8) + 12)
+  ctx.globalAlpha = .9; ctx.fillStyle = p.background; ctx.fillRect(4, 4, width, 20); ctx.globalAlpha = 1
+  ctx.fillStyle = p.ink; ctx.fillText(text, 10, 18)
 }
 
 
@@ -191,13 +541,13 @@ const clamp = (n, low, high) => Math.max(low, Math.min(high, n))
 function createGame(kind, random = Math.random) {
   const spec = GAME_CATALOG.find(item => item.id === kind)
   if (!spec) throw new Error(`Unknown game: ${kind}`)
-  const base = { kind, width: spec.width, height: spec.height, score: 0, over: false, time: 0 }
+  const base = { kind, width: spec.width, height: spec.height, score: 0, over: false, time: 0, escort: createEscort() }
   if (kind === 'snake') {
     const game = { ...base, body: [{ x: 8, y: 8 }, { x: 7, y: 8 }, { x: 6, y: 8 }], direction: { x: 1, y: 0 }, food: null, accumulator: 0 }
     placeFood(game, random)
     return game
   }
-  if (kind === 'plane') return { ...base, player: { x: 148, y: 398, w: 24, h: 32 }, enemies: [], bullets: [], bursts: [], cooldown: 0, spawn: 0.35 }
+  if (kind === 'plane') return { ...base, player: { x: 148, y: 398, w: 24, h: 32 }, enemies: [], bullets: [], bursts: [], cooldown: 0, spawn: 0.35, escort: createEscort() }
   if (kind === 'tank') return createTankState(base)
   throw new Error(`Unknown game: ${kind}`)
 }
@@ -205,7 +555,12 @@ function createGame(kind, random = Math.random) {
 function placeFood(game, random) {
   const free = []
   for (let y = 0; y < 16; y++) for (let x = 0; x < 24; x++) {
-    if (!game.body.some(part => same(part, { x, y }))) free.push({ x, y })
+    if (!game.body.some(part => same(part, { x, y })) && !game.escort.drops.some(drop => !drop.hit && drop.cellX === x && drop.cellY === y)) free.push({ x, y })
+  }
+  // On a nearly full board, retire a bonus rather than letting it block the next ordinary food.
+  if (!free.length) {
+    const drop = game.escort.drops.find(drop => !drop.hit && !game.body.some(part => same(part, { x: drop.cellX, y: drop.cellY })))
+    if (drop) { drop.hit = true; free.push({ x: drop.cellX, y: drop.cellY }) }
   }
   if (!free.length) { game.over = true; game.food = null; return }
   game.food = free[Math.floor(random() * free.length)]
@@ -225,26 +580,38 @@ function stepGame(game, input, seconds, random = Math.random) {
   const dt = clamp(seconds, 0, 0.05)
   game.time += dt
   if (game.kind === 'snake') {
+    stepGroundMission(game, dt, random)
     game.accumulator += dt
-    if (game.accumulator < Math.max(0.075, 0.15 - game.score * 0.001)) return
+    if (game.accumulator < Math.max(0.075, 0.15 - game.score * 0.001) * (game.escort.slow > 0 ? 1.6 : 1)) return
     game.accumulator = 0
     const directions = { ArrowUp: { x: 0, y: -1 }, ArrowDown: { x: 0, y: 1 }, ArrowLeft: { x: -1, y: 0 }, ArrowRight: { x: 1, y: 0 } }
     const next = directions[input.direction]
     if (next && next.x !== -game.direction.x && next.y !== -game.direction.y) game.direction = next
     const head = { x: game.body[0].x + game.direction.x, y: game.body[0].y + game.direction.y }
     const eat = same(head, game.food)
-    const body = eat ? game.body : game.body.slice(0, -1)
-    if (head.x < 0 || head.x >= 24 || head.y < 0 || head.y >= 16 || body.some(part => same(part, head))) { game.over = true; return }
+    const prize = snakeMissionPrize(game, head)
+    const grows = eat || prize?.type === 'bounty'
+    const body = grows ? game.body : game.body.slice(0, -1)
+    if (head.x < 0 || head.x >= 24 || head.y < 0 || head.y >= 16 || body.some(part => same(part, head))) {
+      if (!rescueMissionSnake(game, input)) game.over = true
+      return
+    }
     game.body.unshift(head)
-    if (eat) { game.score += 10; placeFood(game, random) } else game.body.pop()
+    if (eat) { game.score += 10 * (game.escort.multiplier > 0 ? 2 : 1); placeFood(game, random) }
+    if (prize) collectSnakeMissionPrize(game, prize)
+    if (!grows) game.body.pop()
   } else if (game.kind === 'plane') {
     const player = game.player
     const horizontal = (input.keys.has('ArrowRight') ? 1 : 0) - (input.keys.has('ArrowLeft') ? 1 : 0)
-    player.x = clamp(player.x + horizontal * 220 * dt, 0, game.width - player.w)
+    const vertical = (input.keys.has('ArrowDown') ? 1 : 0) - (input.keys.has('ArrowUp') ? 1 : 0)
+    const distance = 220 * dt / (Math.hypot(horizontal, vertical) || 1)
+    player.x = clamp(player.x + horizontal * distance, 0, game.width - player.w)
+    player.y = clamp(player.y + vertical * distance, 0, game.height - player.h)
     if (input.pointer && Number.isFinite(input.targetX)) player.x = clamp(input.targetX - player.w / 2, 0, game.width - player.w)
+    if (input.pointer && Number.isFinite(input.targetY)) player.y = clamp(input.targetY - player.h / 2, 0, game.height - player.h)
     game.cooldown -= dt
     if (game.cooldown <= 0) {
-      game.bullets.push({ x: player.x + player.w / 2 - 2, y: player.y - 10, w: 4, h: 12 })
+      for (const offset of game.escort.dual > 0 ? [-8, 8] : [0]) game.bullets.push({ x: player.x + player.w / 2 - 2 + offset, y: player.y - 10, w: 4, h: 12 })
       game.cooldown += 0.16
     }
     game.spawn -= dt
@@ -252,20 +619,26 @@ function stepGame(game, input, seconds, random = Math.random) {
       game.enemies.push({ x: 8 + random() * (game.width - 44), y: -34, w: 28, h: 30, speed: 85 + random() * 55 + Math.min(game.score / 10, 65) })
       game.spawn += Math.max(0.32, 0.85 - game.score / 1200)
     }
+    stepEscort(game, dt, random)
     for (const burst of game.bursts) burst.life -= dt
     for (const bullet of game.bullets) bullet.y -= 380 * dt
     for (const enemy of game.enemies) {
+      if (enemy.hit) continue
       enemy.y += enemy.speed * dt
       const bullet = game.bullets.find(shot => !shot.hit && overlaps(enemy, shot))
       if (bullet) {
         bullet.hit = true; enemy.hit = true; game.score += 10
         game.bursts.push({ x: enemy.x + enemy.w / 2, y: enemy.y + enemy.h / 2, life: 0.3 })
-      } else if (overlaps(player, enemy)) game.over = true
+      } else if (overlaps(player, enemy) && game.escort.invincible <= 0) {
+        if (game.escort.shield) { game.escort.shield = 0; game.escort.invincible = 1.5; enemy.hit = true }
+        else game.over = true
+      }
     }
     game.bullets = game.bullets.filter(shot => !shot.hit && shot.y + shot.h > 0)
     game.enemies = game.enemies.filter(enemy => !enemy.hit && enemy.y < game.height + enemy.h)
     game.bursts = game.bursts.filter(burst => burst.life > 0)
   } else {
+    stepGroundMission(game, dt, random)
     stepTank(game, input, dt, random)
   }
 }
@@ -281,6 +654,7 @@ function drawGame(ctx, game, palette = DEFAULT_PALETTE) {
   if (game.kind === 'snake') {
     game.body.forEach((p, i) => { ctx.fillStyle = i ? palette.accent : palette.ink; ctx.fillRect(p.x * 20 + 2, p.y * 20 + 2, 16, 16) })
     if (game.food) { ctx.fillStyle = palette.food; ctx.beginPath(); ctx.arc(game.food.x * 20 + 10, game.food.y * 20 + 10, 6, 0, Math.PI * 2); ctx.fill() }
+    drawGroundMission(ctx, game, palette)
   } else if (game.kind === 'plane') {
     ctx.fillStyle = palette.accent
     for (const shot of game.bullets) ctx.fillRect(shot.x, shot.y, shot.w, shot.h)
@@ -297,10 +671,12 @@ function drawGame(ctx, game, palette = DEFAULT_PALETTE) {
     for (const burst of game.bursts) {
       ctx.strokeStyle = palette.food; ctx.lineWidth = 2
       ctx.beginPath(); ctx.arc(burst.x, burst.y, 5 + (0.3 - burst.life) * 45, 0, Math.PI * 2); ctx.stroke()
-      ctx.fillStyle = palette.ink; ctx.font = '12px sans-serif'; ctx.fillText('+10', burst.x - 10, burst.y - 16 - (0.3 - burst.life) * 30)
+      ctx.fillStyle = palette.ink; ctx.font = '12px sans-serif'; ctx.fillText(`+${burst.points || 10}`, burst.x - 10, burst.y - 16 - (0.3 - burst.life) * 30)
     }
+    drawEscort(ctx, game, palette)
   } else {
     drawTank(ctx, game, palette)
+    drawGroundMission(ctx, game, palette)
   }
 }
 
@@ -351,7 +727,7 @@ function resizeArcadeWindow(rect, edge, dx, dy, viewport, options = {}) {
   return fitArcadeWindow({ ...sized, x, y }, viewport, options)
 }
 
-const arcadeCSS = ".dsh-arcade {\n  --arcade-bg: var(--dsw-alias-bg-layer-1, #fff);\n  --arcade-soft: var(--dsw-alias-bg-base, #f8f9fb);\n  --arcade-border: var(--dsw-alias-border-l3, #e1e4e9);\n  --arcade-text: var(--dsw-alias-label-primary, #263148);\n  --arcade-muted: var(--dsw-alias-label-secondary, #697386);\n  --arcade-hover: var(--dsw-alias-interactive-bg-hover, #eef0f4);\n  --arcade-accent: var(--dsw-alias-brand-primary-new-colorprimary-new-color, #4d6bfe);\n  --arcade-background: var(--dsw-alias-bg-base, #f8f9fb);\n  --arcade-grid: var(--dsw-alias-border-l1, #e9ecf1);\n  --arcade-ink: var(--dsw-alias-label-primary, #263148);\n  --arcade-obstacle: var(--dsw-alias-label-caption, #aab5c8);\n  --arcade-food: var(--dsw-static-orange-500, #db8e48);\n  --arcade-enemy: var(--dsw-static-red-500, #d56868);\n  font-family: inherit;\n  color: inherit;\n}\n.dsh-arcade * { box-sizing: border-box; }\n.dsh-arcade button { font: inherit; cursor: pointer; border: 1px solid var(--arcade-border); border-radius: var(--dsw-radius-md, 8px); background: transparent; color: var(--arcade-text); padding: 7px 11px; touch-action: manipulation; }\n.dsh-arcade button:hover:not(:disabled) { background: var(--arcade-hover); }\n.dsh-arcade button:focus-visible, .dsh-arcade canvas:focus-visible, .arcade-search:focus-visible { outline: 2px solid var(--arcade-accent); outline-offset: 2px; }\n.dsh-arcade button:disabled { cursor: default; opacity: .4; }\n.dsh-arcade .arcade-launch { background: transparent; color: inherit; border-color: transparent; font-size: 12px; white-space: nowrap; }\n.arcade-panel { position: fixed; z-index: 60; right: auto; bottom: auto; container: arcade-window / inline-size; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--arcade-border); border-radius: 16px; background: var(--arcade-bg); color: var(--arcade-text); box-shadow: 0 16px 64px rgb(0 0 0 / 14%), 0 2px 8px rgb(0 0 0 / 4%); font-size: 13px; text-align: left; line-height: 1.5; }\n.arcade-header { display: flex; gap: 10px; align-items: center; padding: 18px 18px; border-bottom: 1px solid var(--arcade-border); flex-shrink: 0; cursor: grab; touch-action: none; user-select: none; }\n.arcade-header:active { cursor: grabbing; }\n.dsh-arcade .arcade-drag-handle { border: 0; cursor: grab; padding: 0; font-size: 22px; color: var(--arcade-muted); touch-action: none; }\n.dsh-arcade .arcade-mode-toggle { font-size: 11px; white-space: nowrap; padding: 5px 8px; }\n.arcade-heading { flex: 1; }\n.arcade-panel h2 { font-size: 17px; font-weight: 600; margin: 0; }\n.arcade-panel p { margin: 0; }\n.arcade-heading p { color: var(--arcade-muted); margin-top: 2px; font-size: 12px; }\n.dsh-arcade .arcade-close { border: 0; font-size: 22px; line-height: 28px; padding: 0; width: 30px; height: 30px; color: var(--arcade-muted); }\n.dsh-arcade .arcade-menu-toggle { display: none; font-size: 12px; }\n.arcade-body { display: flex; flex: 1; min-height: 0; }\n.arcade-library { flex: 0 0 178px; width: 178px; background: var(--arcade-soft); border-right: 1px solid var(--arcade-border); padding: 20px 12px 16px; display: flex; flex-direction: column; min-height: 0; gap: 14px; }\n.arcade-library-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 4px; }\n.arcade-library-heading strong { font-size: 12px; font-weight: 600; }\n.arcade-library-heading small { font-size: 10px; color: var(--arcade-muted); }\n.arcade-search { display: block; width: 100%; min-width: 0; font: inherit; font-size: 12px; line-height: 20px; padding: 6px 9px; background: var(--arcade-bg); border: 1px solid var(--arcade-border); color: var(--arcade-text); border-radius: 7px; }\n.arcade-search::placeholder { color: var(--arcade-muted); }\n.arcade-filters { display: flex; flex-wrap: wrap; gap: 4px; }\n.dsh-arcade .arcade-filters button { font-size: 11px; border: 0; border-radius: 5px; padding: 3px 7px; color: var(--arcade-muted); }\n.dsh-arcade .arcade-filters button[aria-pressed=true] { color: var(--arcade-text); background: var(--arcade-hover); font-weight: 600; }\n.arcade-game-list { flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 7px; scrollbar-width: thin; }\n.dsh-arcade .arcade-game-list button { flex-shrink: 0; display: flex; align-items: center; gap: 11px; text-align: left; padding: 12px 9px; border-color: transparent; }\n.arcade-game-list button[aria-pressed=true] { background: var(--arcade-bg); border-color: var(--arcade-border); box-shadow: 0 1px 3px rgb(0 0 0 / 3%); }\n.arcade-game-icon { flex-shrink: 0; color: var(--arcade-muted); }\n.arcade-game-list button[aria-pressed=true] .arcade-game-icon { color: var(--arcade-accent); }\n.arcade-game-list strong { display: block; font-size: 12px; font-weight: 500; }\n.arcade-game-list small { display: block; font-size: 10px; color: var(--arcade-muted); margin-top: 3px; }\n.arcade-empty { color: var(--arcade-muted); padding: 12px 5px; font-size: 12px; }\n.arcade-library-tip { color: var(--arcade-muted); font-size: 10px; padding: 4px; }\n.arcade-play { flex: 1; min-width: 0; min-height: 0; padding: 20px 24px 16px; display: flex; flex-direction: column; overflow-y: auto; }\n.arcade-game-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }\n.arcade-game-heading h3 { font-size: 18px; font-weight: 600; margin: 0; }\n.arcade-game-heading p { color: var(--arcade-muted); font-size: 12px; margin-top: 3px; }\n.arcade-orientation { font-size: 10px; color: var(--arcade-muted); background: var(--arcade-soft); border: 1px solid var(--arcade-border); border-radius: 5px; padding: 2px 7px; white-space: nowrap; }\n.arcade-scores { flex-shrink: 0; display: flex; justify-content: space-between; margin: 15px 0 12px; color: var(--arcade-muted); font-size: 11px; }\n.arcade-scores span { display: flex; align-items: baseline; gap: 9px; }\n.arcade-scores strong { color: var(--arcade-text); font: 21px ui-monospace, monospace; letter-spacing: 1px; }\n.arcade-arena { flex: 1; display: grid; place-items: center; min-height: 80px; padding: 4px 0; }\n.arcade-stage { position: relative; width: 100%; border: 1px solid var(--arcade-border); border-radius: 10px; overflow: hidden; background: var(--arcade-soft); }\n.arcade-panel[data-orientation=portrait] .arcade-stage { width: min(100%, 264px, calc((100dvh - 370px) * 2 / 3)); }\n.arcade-panel[data-orientation=square] .arcade-stage { width: min(100%, 360px, calc(100dvh - 430px)); }\n.arcade-tank-hud { display: flex; justify-content: space-between; gap: 12px; font-size: 11px; color: var(--arcade-muted); margin-bottom: 8px; flex-shrink: 0; }\n.arcade-stage canvas { display: block; width: 100%; height: auto; touch-action: none; }\n.arcade-curtain { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: color-mix(in srgb, var(--arcade-bg) 86%, transparent); pointer-events: none; text-align: center; padding: 12px; }\n.arcade-curtain-icon { width: 36px; height: 36px; color: var(--arcade-muted); margin-bottom: 4px; }\n.arcade-curtain strong { font-size: 13px; font-weight: 500; color: var(--arcade-muted); }\n.dsh-arcade .arcade-primary { background: var(--dsw-alias-button-primary-fill, #263148); color: var(--dsw-alias-label-primary-foreground, #fff); border-color: transparent; pointer-events: auto; padding: 8px 18px; }\n.dsh-arcade .arcade-primary:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover, #424c60); }\n.arcade-panel .arcade-hint { flex-shrink: 0; color: var(--arcade-muted); font-size: 11px; margin: 12px 0; text-align: center; }\n.arcade-toolbar { flex-shrink: 0; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }\n.arcade-controls, .arcade-actions { display: flex; gap: 5px; }\n.arcade-controls button { min-width: 30px; padding: 6px 8px; font-size: 11px; touch-action: none; }\n.arcade-actions button { padding: 6px 10px; font-size: 11px; }\n.arcade-footnote { display: block; flex-shrink: 0; color: var(--arcade-muted); font-size: 10px; margin-top: 12px; }\n.arcade-status { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 11px 22px; color: var(--arcade-muted); background: var(--arcade-soft); border-top: 1px solid var(--arcade-border); font-size: 11px; }\n.arcade-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--arcade-muted); flex-shrink: 0; }\n.arcade-dot.working { background: var(--arcade-accent); }\n@container arcade-window (max-width: 600px) {\n  .arcade-header { padding: 14px 16px; gap: 8px; }\n  .dsh-arcade .arcade-menu-toggle { display: block; }\n  .arcade-body { flex-direction: column; }\n  .arcade-library { display: none; width: 100%; flex: 0 0 auto; border-right: 0; border-bottom: 1px solid var(--arcade-border); padding: 12px 16px; gap: 8px; max-height: 240px; }\n  .arcade-library[data-expanded=true] { display: flex; flex: 1; max-height: none; }\n  .arcade-body:has(.arcade-library[data-expanded=true]) .arcade-play { display: none; }\n  .arcade-library-heading, .arcade-library-tip { display: none; }\n  .arcade-game-list { flex: 1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: max-content; align-content: start; max-height: none; }\n  .dsh-arcade .arcade-game-list button { padding: 7px; }\n  .arcade-play { padding: 16px; }\n  .arcade-panel[data-orientation=portrait] .arcade-stage { width: min(100%, 264px, calc((100dvh - 345px) * 2 / 3)); }\n  .arcade-status { padding: 10px 16px; }\n  .arcade-controls, .arcade-actions { gap: 4px; }\n}\n@media (max-height: 620px) {\n  .arcade-play { overflow-y: auto; }\n}\r\n.arcade-resize-handle { position: absolute; z-index: 8; touch-action: none; }\n.arcade-resize-n, .arcade-resize-s { left: 14px; right: 14px; height: 7px; cursor: ns-resize; }\n.arcade-resize-n { top: 0; } .arcade-resize-s { bottom: 0; }\n.arcade-resize-e, .arcade-resize-w { top: 14px; bottom: 14px; width: 7px; cursor: ew-resize; }\n.arcade-resize-e { right: 0; } .arcade-resize-w { left: 0; }\n.arcade-resize-nw, .arcade-resize-ne, .arcade-resize-sw, .arcade-resize-se { width: 16px; height: 16px; }\n.arcade-resize-nw { top: 0; left: 0; cursor: nwse-resize; }\n.arcade-resize-ne { top: 0; right: 0; cursor: nesw-resize; }\n.arcade-resize-sw { bottom: 0; left: 0; cursor: nesw-resize; }\n.arcade-resize-se { bottom: 0; right: 0; cursor: nwse-resize; }\n.arcade-resize-se::after { content: ''; position: absolute; width: 7px; height: 7px; right: 4px; bottom: 4px; border-right: 2px solid var(--arcade-muted); border-bottom: 2px solid var(--arcade-muted); opacity: .4; }\n.arcade-resize-handle:focus-visible { outline: 2px solid var(--arcade-accent); outline-offset: -2px; }\n.arcade-panel[data-minimal=true] { border-radius: 10px; }\n.arcade-panel[data-minimal=true] > .arcade-header,\n.arcade-panel[data-minimal=true] > .arcade-status,\n.arcade-panel[data-minimal=true] .arcade-library,\n.arcade-panel[data-minimal=true] .arcade-play > :not(.arcade-arena) { display: none; }\n.arcade-panel[data-minimal=true] .arcade-body { display: flex; height: 100%; }\n.arcade-panel[data-minimal=true] .arcade-play { display: flex; padding: 0; overflow: hidden; }\n.arcade-panel[data-minimal=true] .arcade-arena { padding: 0; min-height: 0; width: 100%; height: 100%; }\n.arcade-panel[data-minimal=true] .arcade-stage { border: 0; border-radius: 0; }\n.arcade-panel[data-minimal=true] canvas { width: 100%; height: 100%; }\n.arcade-panel[data-minimal=true] .arcade-curtain-icon { display: none; }\n.arcade-panel[data-minimal=true] .arcade-curtain { gap: 10px; }\n.arcade-panel[data-minimal=true] .arcade-curtain strong { font-size: 11px; }\n.arcade-panel[data-minimal=true] .arcade-primary { padding: 6px 10px; font-size: 11px; }\n.arcade-mini-tools { position: absolute; top: 8px; left: 8px; right: 8px; display: flex; justify-content: flex-end; align-items: center; gap: 4px; z-index: 7; opacity: 0; transition: opacity .12s; pointer-events: none; }\n.arcade-panel:hover .arcade-mini-tools, .arcade-mini-tools:focus-within { opacity: 1; }\n.dsh-arcade .arcade-mini-tools button { pointer-events: auto; width: 28px; height: 28px; padding: 0; display: grid; place-items: center; background: color-mix(in srgb, var(--arcade-bg) 94%, transparent); border: 1px solid var(--arcade-border); font-size: 15px; box-shadow: 0 1px 4px rgb(0 0 0 / 8%); }\n.dsh-arcade .arcade-mini-tools .arcade-mini-drag { margin-right: auto; cursor: grab; touch-action: none; font-size: 22px; }\n.arcade-mini-notice { position: absolute; bottom: 8px; left: 8px; right: 8px; padding: 7px 9px; background: var(--arcade-bg); border: 1px solid var(--arcade-border); border-radius: 6px; font-size: 10px; color: var(--arcade-text); z-index: 6; }\n@media (hover: none) { .arcade-mini-tools { opacity: 1; } }\n"
+const arcadeCSS = ".dsh-arcade {\n  --arcade-bg: var(--dsw-alias-bg-layer-1, #fff);\n  --arcade-soft: var(--dsw-alias-bg-base, #f8f9fb);\n  --arcade-border: var(--dsw-alias-border-l3, #e1e4e9);\n  --arcade-text: var(--dsw-alias-label-primary, #263148);\n  --arcade-muted: var(--dsw-alias-label-secondary, #697386);\n  --arcade-hover: var(--dsw-alias-interactive-bg-hover, #eef0f4);\n  --arcade-accent: var(--dsw-alias-brand-primary-new-colorprimary-new-color, #4d6bfe);\n  --arcade-background: var(--dsw-alias-bg-base, #f8f9fb);\n  --arcade-grid: var(--dsw-alias-border-l1, #e9ecf1);\n  --arcade-ink: var(--dsw-alias-label-primary, #263148);\n  --arcade-obstacle: var(--dsw-alias-label-caption, #aab5c8);\n  --arcade-food: var(--dsw-static-orange-500, #db8e48);\n  --arcade-enemy: var(--dsw-static-red-500, #d56868);\n  font-family: inherit;\n  color: inherit;\n}\n.dsh-arcade * { box-sizing: border-box; }\n.dsh-arcade button { font: inherit; cursor: pointer; border: 1px solid var(--arcade-border); border-radius: var(--dsw-radius-md, 8px); background: transparent; color: var(--arcade-text); padding: 7px 11px; touch-action: manipulation; }\n.dsh-arcade button:hover:not(:disabled) { background: var(--arcade-hover); }\n.dsh-arcade button:focus-visible, .dsh-arcade canvas:focus-visible, .arcade-search:focus-visible { outline: 2px solid var(--arcade-accent); outline-offset: 2px; }\n.dsh-arcade button:disabled { cursor: default; opacity: .4; }\n.dsh-arcade .arcade-launch { background: transparent; color: inherit; border-color: transparent; font-size: 12px; white-space: nowrap; }\n.arcade-panel { position: fixed; z-index: 60; right: auto; bottom: auto; container: arcade-window / inline-size; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--arcade-border); border-radius: 16px; background: var(--arcade-bg); color: var(--arcade-text); box-shadow: 0 16px 64px rgb(0 0 0 / 14%), 0 2px 8px rgb(0 0 0 / 4%); font-size: 13px; text-align: left; line-height: 1.5; }\n.arcade-header { display: flex; gap: 10px; align-items: center; padding: 18px 18px; border-bottom: 1px solid var(--arcade-border); flex-shrink: 0; cursor: grab; touch-action: none; user-select: none; }\n.arcade-header:active { cursor: grabbing; }\n.dsh-arcade .arcade-drag-handle { border: 0; cursor: grab; padding: 0; font-size: 22px; color: var(--arcade-muted); touch-action: none; }\n.dsh-arcade .arcade-mode-toggle { font-size: 11px; white-space: nowrap; padding: 5px 8px; }\n.arcade-heading { flex: 1; }\n.arcade-panel h2 { font-size: 17px; font-weight: 600; margin: 0; }\n.arcade-panel p { margin: 0; }\n.arcade-heading p { color: var(--arcade-muted); margin-top: 2px; font-size: 12px; }\n.dsh-arcade .arcade-close { border: 0; font-size: 22px; line-height: 28px; padding: 0; width: 30px; height: 30px; color: var(--arcade-muted); }\n.dsh-arcade .arcade-menu-toggle { display: none; font-size: 12px; }\n.arcade-body { display: flex; flex: 1; min-height: 0; }\n.arcade-library { flex: 0 0 178px; width: 178px; background: var(--arcade-soft); border-right: 1px solid var(--arcade-border); padding: 20px 12px 16px; display: flex; flex-direction: column; min-height: 0; gap: 14px; }\n.arcade-library-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 4px; }\n.arcade-library-heading strong { font-size: 12px; font-weight: 600; }\n.arcade-library-heading small { font-size: 10px; color: var(--arcade-muted); }\n.arcade-search { display: block; width: 100%; min-width: 0; font: inherit; font-size: 12px; line-height: 20px; padding: 6px 9px; background: var(--arcade-bg); border: 1px solid var(--arcade-border); color: var(--arcade-text); border-radius: 7px; }\n.arcade-search::placeholder { color: var(--arcade-muted); }\n.arcade-filters { display: flex; flex-wrap: wrap; gap: 4px; }\n.dsh-arcade .arcade-filters button { font-size: 11px; border: 0; border-radius: 5px; padding: 3px 7px; color: var(--arcade-muted); }\n.dsh-arcade .arcade-filters button[aria-pressed=true] { color: var(--arcade-text); background: var(--arcade-hover); font-weight: 600; }\n.arcade-game-list { flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 7px; scrollbar-width: thin; }\n.dsh-arcade .arcade-game-list button { flex-shrink: 0; display: flex; align-items: center; gap: 11px; text-align: left; padding: 12px 9px; border-color: transparent; }\n.arcade-game-list button[aria-pressed=true] { background: var(--arcade-bg); border-color: var(--arcade-border); box-shadow: 0 1px 3px rgb(0 0 0 / 3%); }\n.arcade-game-icon { flex-shrink: 0; color: var(--arcade-muted); }\n.arcade-game-list button[aria-pressed=true] .arcade-game-icon { color: var(--arcade-accent); }\n.arcade-game-list strong { display: block; font-size: 12px; font-weight: 500; }\n.arcade-game-list small { display: block; font-size: 10px; color: var(--arcade-muted); margin-top: 3px; }\n.arcade-empty { color: var(--arcade-muted); padding: 12px 5px; font-size: 12px; }\n.arcade-library-tip { color: var(--arcade-muted); font-size: 10px; padding: 4px; }\n.arcade-play { flex: 1; min-width: 0; min-height: 0; padding: 20px 24px 16px; display: flex; flex-direction: column; overflow-y: auto; }\n.arcade-game-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }\n.arcade-game-heading h3 { font-size: 18px; font-weight: 600; margin: 0; }\n.arcade-game-heading p { color: var(--arcade-muted); font-size: 12px; margin-top: 3px; }\n.arcade-orientation { font-size: 10px; color: var(--arcade-muted); background: var(--arcade-soft); border: 1px solid var(--arcade-border); border-radius: 5px; padding: 2px 7px; white-space: nowrap; }\n.arcade-scores { flex-shrink: 0; display: flex; justify-content: space-between; margin: 15px 0 12px; color: var(--arcade-muted); font-size: 11px; }\n.arcade-scores span { display: flex; align-items: baseline; gap: 9px; }\n.arcade-scores strong { color: var(--arcade-text); font: 21px ui-monospace, monospace; letter-spacing: 1px; }\n.arcade-arena { flex: 1; display: grid; place-items: center; min-height: 80px; padding: 4px 0; }\n.arcade-stage { position: relative; width: 100%; border: 1px solid var(--arcade-border); border-radius: 10px; overflow: hidden; background: var(--arcade-soft); }\n.arcade-panel[data-orientation=portrait] .arcade-stage { width: min(100%, 264px, calc((100dvh - 370px) * 2 / 3)); }\n.arcade-panel[data-orientation=square] .arcade-stage { width: min(100%, 360px, calc(100dvh - 430px)); }\n.arcade-tank-hud { display: flex; justify-content: space-between; gap: 12px; font-size: 11px; color: var(--arcade-muted); margin-bottom: 8px; flex-shrink: 0; }\n.arcade-stage canvas { display: block; width: 100%; height: auto; touch-action: none; }\n.arcade-curtain { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: color-mix(in srgb, var(--arcade-bg) 86%, transparent); pointer-events: none; text-align: center; padding: 12px; }\n.arcade-curtain-icon { width: 36px; height: 36px; color: var(--arcade-muted); margin-bottom: 4px; }\n.arcade-curtain strong { font-size: 13px; font-weight: 500; color: var(--arcade-muted); }\n.dsh-arcade .arcade-primary { background: var(--dsw-alias-button-primary-fill, #263148); color: var(--dsw-alias-label-primary-foreground, #fff); border-color: transparent; pointer-events: auto; padding: 8px 18px; }\n.dsh-arcade .arcade-primary:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover, #424c60); }\n.arcade-panel .arcade-hint { flex-shrink: 0; color: var(--arcade-muted); font-size: 11px; margin: 12px 0; text-align: center; }\n.arcade-toolbar { flex-shrink: 0; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }\n.arcade-controls, .arcade-actions { display: flex; gap: 5px; }\n.arcade-controls button { min-width: 30px; padding: 6px 8px; font-size: 11px; touch-action: none; }\n.arcade-actions button { padding: 6px 10px; font-size: 11px; }\n.arcade-footnote { display: block; flex-shrink: 0; color: var(--arcade-muted); font-size: 10px; margin-top: 12px; }\n.arcade-status { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 11px 22px; color: var(--arcade-muted); background: var(--arcade-soft); border-top: 1px solid var(--arcade-border); font-size: 11px; }\n.arcade-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--arcade-muted); flex-shrink: 0; }\n.arcade-dot.working { background: var(--arcade-accent); }\n@container arcade-window (max-width: 600px) {\n  .arcade-header { padding: 14px 16px; gap: 8px; }\n  .dsh-arcade .arcade-menu-toggle { display: block; }\n  .arcade-body { flex-direction: column; }\n  .arcade-library { display: none; width: 100%; flex: 0 0 auto; border-right: 0; border-bottom: 1px solid var(--arcade-border); padding: 12px 16px; gap: 8px; max-height: 240px; }\n  .arcade-library[data-expanded=true] { display: flex; flex: 1; max-height: none; }\n  .arcade-body:has(.arcade-library[data-expanded=true]) .arcade-play { display: none; }\n  .arcade-library-heading, .arcade-library-tip { display: none; }\n  .arcade-game-list { flex: 1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: max-content; align-content: start; max-height: none; }\n  .dsh-arcade .arcade-game-list button { padding: 7px; }\n  .arcade-play { padding: 16px; }\n  .arcade-panel[data-orientation=portrait] .arcade-stage { width: min(100%, 264px, calc((100dvh - 345px) * 2 / 3)); }\n  .arcade-status { padding: 10px 16px; }\n  .arcade-controls, .arcade-actions { gap: 4px; }\n}\n@media (max-height: 620px) {\n  .arcade-play { overflow-y: auto; }\n}\r\n.arcade-resize-handle { position: absolute; z-index: 8; touch-action: none; }\n.arcade-resize-n, .arcade-resize-s { left: 14px; right: 14px; height: 7px; cursor: ns-resize; }\n.arcade-resize-n { top: 0; } .arcade-resize-s { bottom: 0; }\n.arcade-resize-e, .arcade-resize-w { top: 14px; bottom: 14px; width: 7px; cursor: ew-resize; }\n.arcade-resize-e { right: 0; } .arcade-resize-w { left: 0; }\n.arcade-resize-nw, .arcade-resize-ne, .arcade-resize-sw, .arcade-resize-se { width: 16px; height: 16px; }\n.arcade-resize-nw { top: 0; left: 0; cursor: nwse-resize; }\n.arcade-resize-ne { top: 0; right: 0; cursor: nesw-resize; }\n.arcade-resize-sw { bottom: 0; left: 0; cursor: nesw-resize; }\n.arcade-resize-se { bottom: 0; right: 0; cursor: nwse-resize; }\n.arcade-resize-se::after { content: ''; position: absolute; width: 7px; height: 7px; right: 4px; bottom: 4px; border-right: 2px solid var(--arcade-muted); border-bottom: 2px solid var(--arcade-muted); opacity: .4; }\n.arcade-resize-handle:focus-visible { outline: 2px solid var(--arcade-accent); outline-offset: -2px; }\n.arcade-panel[data-minimal=true] { border-radius: 10px; }\n.arcade-panel[data-minimal=true] > .arcade-header,\n.arcade-panel[data-minimal=true] > .arcade-status,\n.arcade-panel[data-minimal=true] .arcade-library,\n.arcade-panel[data-minimal=true] .arcade-play > :not(.arcade-arena) { display: none; }\n.arcade-panel[data-minimal=true] .arcade-body { display: flex; height: 100%; }\n.arcade-panel[data-minimal=true] .arcade-play { display: flex; padding: 0; overflow: hidden; }\n.arcade-panel[data-minimal=true] .arcade-arena { padding: 0; min-height: 0; width: 100%; height: 100%; }\n.arcade-panel[data-minimal=true] .arcade-stage { border: 0; border-radius: 0; }\n.arcade-panel[data-minimal=true] canvas { width: 100%; height: 100%; }\n.arcade-panel[data-minimal=true] .arcade-curtain-icon { display: none; }\n.arcade-panel[data-minimal=true] .arcade-curtain { gap: 10px; }\n.arcade-panel[data-minimal=true] .arcade-curtain strong { font-size: 11px; }\n.arcade-panel[data-minimal=true] .arcade-primary { padding: 6px 10px; font-size: 11px; }\n.arcade-mini-tools { position: absolute; top: 8px; left: 8px; right: 8px; display: flex; justify-content: flex-end; align-items: center; gap: 4px; z-index: 7; opacity: 0; transition: opacity .12s; pointer-events: none; }\n.arcade-panel:hover .arcade-mini-tools, .arcade-mini-tools:focus-within { opacity: 1; }\n.dsh-arcade .arcade-mini-tools button { pointer-events: auto; width: 28px; height: 28px; padding: 0; display: grid; place-items: center; background: color-mix(in srgb, var(--arcade-bg) 94%, transparent); border: 1px solid var(--arcade-border); font-size: 15px; box-shadow: 0 1px 4px rgb(0 0 0 / 8%); }\n.dsh-arcade .arcade-mini-tools .arcade-mini-drag { margin-right: auto; cursor: grab; touch-action: none; font-size: 22px; }\n.arcade-mini-notice { position: absolute; bottom: 8px; left: 8px; right: 8px; padding: 7px 9px; background: var(--arcade-bg); border: 1px solid var(--arcade-border); border-radius: 6px; font-size: 10px; color: var(--arcade-text); z-index: 6; }\n@media (hover: none) { .arcade-mini-tools { opacity: 1; } }\n.arcade-escort-info { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--arcade-muted); font-size: 11px; }\n.dsh-arcade .arcade-escort-info button { flex-shrink: 0; padding: 4px 8px; font-size: 11px; }\n.arcade-escort-summary { display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 14px; border: 1px solid var(--arcade-border); border-radius: 10px; background: var(--arcade-bg); font-size: 12px; }\n.arcade-escort-summary small { font-size: 10px; color: var(--arcade-muted); }\n.arcade-escort-summary span { font-variant-numeric: tabular-nums; font-size: 17px; }\n"
 const React = require('react')
 const h = React.createElement
 const { useEffect, useRef, useState } = React
@@ -363,8 +739,8 @@ const dictionaries = {
     score: '得分', best: '最高分', paused: '已暂停', over: '本局结束', idle: '随时开始，随时停下',
     working: 'AI 正在工作 · 可以玩一小局', ready: 'AI 已结束运行 · 游戏已暂停，请查看回复',
     attention: 'AI 需要你的操作 · 游戏已暂停', unavailable: '会话状态暂不可用 · 游戏已暂停', switched: '已切换会话 · 游戏已暂停',
-    focus: '离开游戏后已暂停', planeHint: '← → 或拖动左右移动，自动射击；击落敌机 +10 分，撞到敌机结束。',
-    snakeHint: '方向键转向，吃到食物得分，避开边界和自己。', tankHint: '方向键移动转向，空格射击；砖墙可击碎，钢墙不可破坏，击毁敌坦克 +100 分。',
+    focus: '离开游戏后已暂停', planeHint: '方向键或拖动移动，自动射击。接住 Step 补给：双发 8 秒、护盾抵挡一次、炸弹清除敌弹并伤害敌机。',
+    snakeHint: '方向键转向，避开边界和自己。工具带来限时果实；Step 补给提供双倍、护盾或减速。', tankHint: '方向键移动，空格射击。工具生成三血精英坦克；Step 补给提供连发、护盾或炸弹。',
     canvas: '游戏画布，点击后可用键盘操作', up: '上', down: '下', left: '左', right: '右', fire: '发射',
     saveError: '浏览器禁止保存，最高分仅保留在本次打开期间。', resetHint: '切换游戏会开始新的一局。',
     library: '游戏库', count: '{count} 款游戏', search: '搜索游戏', all: '全部', flight: '飞行', action: '动作', puzzle: '益智',
@@ -373,6 +749,8 @@ const dictionaries = {
     square: '方形', lives: '生命', base: '基地', intact: '完好', destroyed: '已摧毁', baseLost: '基地被击毁',
     choose: '选择游戏', libraryTip: '找一款喜欢的，随时玩一局。', playing: '游戏进行中',
     minimal: '极简模式', restore: '完整模式', drag: '移动窗口', resize: '调整窗口大小',
+    demo: '联动演练', demoHint: '模拟工具调用与 Step 补给 · 不发送模型请求', liveHint: '工具带来新目标，Step 结束掉补给；游戏不影响任务。',
+    escortEnd: '本次任务已结束', demoEnd: '联动演练结束', escortStats: '工具 / 完成 / 失败 / 目标完成', demoRunning: '联动演练中 · 模拟工具调用',
     n: '上边', s: '下边', e: '右边', w: '左边', nw: '左上角', ne: '右上角', sw: '左下角', se: '右下角',
   },
   en: {
@@ -381,8 +759,8 @@ const dictionaries = {
     score: 'Score', best: 'Best', paused: 'Paused', over: 'Game over', idle: 'Start anytime. Pause anytime.',
     working: 'AI is working · enjoy a little game', ready: 'AI stopped · game paused, check the reply',
     attention: 'AI needs your input · game paused', unavailable: 'Session status unavailable · game paused', switched: 'Session changed · game paused',
-    focus: 'Game paused while away', planeHint: 'Use ← → or drag to steer. Fire automatically. Destroy enemies for +10; a collision ends the round.',
-    snakeHint: 'Arrow keys to turn. Eat food. Avoid walls and yourself.', tankHint: 'Arrows to move and turn, Space to fire. Break bricks; steel blocks shots. Destroy enemy tanks for +100.',
+    focus: 'Game paused while away', planeHint: 'Arrows or drag to move; auto fire. Catch Step supplies: twin shot for 8s, one-hit shield, or a bomb clearing enemy shots and damaging aircraft.',
+    snakeHint: 'Arrows to turn; avoid walls and yourself. Tools spawn timed fruit; Steps provide double score, a shield or slow motion.', tankHint: 'Arrows to move, Space to fire. Tools spawn armored tanks; Steps provide rapid fire, a shield or a bomb.',
     canvas: 'Game canvas. Click to use keyboard controls', up: 'Up', down: 'Down', left: 'Left', right: 'Right', fire: 'Fire',
     saveError: 'Browser storage is blocked. Best scores last only for this visit.', resetHint: 'Switching games starts a fresh round.',
     library: 'Game library', count: '{count} games', search: 'Search games', all: 'All', flight: 'Flight', action: 'Action', puzzle: 'Puzzle',
@@ -391,6 +769,8 @@ const dictionaries = {
     square: 'Square', lives: 'Lives', base: 'Base', intact: 'Intact', destroyed: 'Destroyed', baseLost: 'Base destroyed',
     choose: 'Choose a game', libraryTip: 'Pick a favorite for a little break.', playing: 'Playing',
     minimal: 'Minimal mode', restore: 'Full mode', drag: 'Move window', resize: 'Resize window',
+    demo: 'Try task escort', demoHint: 'Simulated tools and Step supplies · no model requests', liveHint: 'Tools spawn aircraft; completed Steps drop supplies. Play never changes the task.',
+    escortEnd: 'Task ended', demoEnd: 'Rehearsal ended', escortStats: 'Tools / Done / Failed / Targets', demoRunning: 'Rehearsal · simulated tool calls',
     n: 'Top', s: 'Bottom', e: 'Right', w: 'Left', nw: 'Top left', ne: 'Top right', sw: 'Bottom left', se: 'Bottom right',
   },
 }
@@ -413,8 +793,9 @@ function gameOrientation(spec) {
   return spec.height === spec.width ? 'square' : spec.height > spec.width ? 'portrait' : 'landscape'
 }
 
-function Arcade({ sessionId, useSessionStatus, t }) {
+function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, t }) {
   const status = useSessionStatus(snapshot => snapshot.get(sessionId))
+  const mission = useProjection('whileplayMission')
   const [open, setOpen] = useState(false)
   const [kind, setKind] = useState('plane')
   const [playing, setPlaying] = useState(false)
@@ -439,10 +820,16 @@ function Arcade({ sessionId, useSessionStatus, t }) {
   const scoreKey = kind === 'plane' ? 'planeShooter' : kind === 'tank' ? 'tankClassic' : kind
   const canvas = useRef(null)
   const game = useRef(createGame('plane'))
+  game.current.language = t('title') === 'Whileplay' ? 'en' : 'zh'
   const input = useRef({ keys: new Set(), direction: null, pointer: false })
   const previous = useRef({ sessionId, running: undefined })
   const scores = useRef({})
-  const clearInput = () => { input.current.keys.clear(); input.current.pointer = false; input.current.direction = null; input.current.targetX = undefined }
+  const latestMission = useRef(mission)
+  latestMission.current = mission
+  const missionBinding = useRef({ sessionId, initialized: false })
+  const [demoMode, setDemoMode] = useState(false)
+  const [escortSummary, setEscortSummary] = useState(null)
+  const clearInput = () => { input.current.keys.clear(); input.current.pointer = false; input.current.direction = null; input.current.targetX = undefined; input.current.targetY = undefined }
   const stop = reason => { clearInput(); setPlaying(false); setNotice(reason) }
   const windowOptions = { minimal, ratio: game.current.width / game.current.height }
 
@@ -488,6 +875,23 @@ function Arcade({ sessionId, useSessionStatus, t }) {
   }, [sessionId, status?.running, status?.pendingInteraction])
 
   useEffect(() => {
+    if (missionBinding.current.sessionId !== sessionId) {
+      missionBinding.current = { sessionId, initialized: false }
+      game.current = createGame(kind); setScore(0); setOver(false); setEscortSummary(null); setDemoMode(false)
+      if (canvas.current) drawGame(canvas.current.getContext('2d'), game.current, canvasPalette(canvas.current))
+    }
+    if (!mission) return
+    if (game.current.escort.demo && !status?.running) return
+    if (game.current.escort.demo) {
+      game.current.escort = createEscort(); setDemoMode(false)
+    }
+    syncEscort(game.current, mission, !missionBinding.current.initialized)
+    missionBinding.current.initialized = true
+    setEscortSummary(game.current.escort.summary)
+    if (open && canvas.current) drawGame(canvas.current.getContext('2d'), game.current, canvasPalette(canvas.current))
+  }, [sessionId, mission, kind, status?.running])
+
+  useEffect(() => {
     const blur = () => stop('focus')
     const visibility = () => { if (document.hidden) stop('focus') }
     window.addEventListener('blur', blur)
@@ -513,6 +917,11 @@ function Arcade({ sessionId, useSessionStatus, t }) {
     let frame, last, cancelled = false
     const tick = now => {
       if (cancelled) return
+      if (game.current.escort.demo) {
+        syncEscort(game.current, demoMission(game.current.time))
+        game.current.escort.demo = true
+        if (game.current.escort.summary) { setEscortSummary(game.current.escort.summary); stop('paused'); return }
+      }
       if (last !== undefined) stepGame(game.current, input.current, (now - last) / 1000)
       last = now
       drawGame(ctx, game.current, canvasPalette(canvas.current))
@@ -534,13 +943,21 @@ function Arcade({ sessionId, useSessionStatus, t }) {
 
   const reset = next => {
     stop('idle'); setKind(next); game.current = createGame(next); setScore(0); setOver(false); setLibraryOpen(false); setTankLives(3)
+    setDemoMode(false); setEscortSummary(null)
+    if (latestMission.current) { syncEscort(game.current, latestMission.current, true); setEscortSummary(game.current.escort.summary) }
     if (canvas.current) drawGame(canvas.current.getContext('2d'), game.current, canvasPalette(canvas.current))
   }
   const canPlay = status?.running !== undefined && !status?.pendingInteraction
   const start = () => {
     if (!canPlay) return
-    if (game.current.over) reset(kind)
+    if (game.current.over || game.current.escort?.summary) reset(kind)
     clearInput(); setNotice('idle'); setPlaying(true); canvas.current.focus()
+  }
+  const startDemo = () => {
+    reset(kind)
+    game.current = createGame(kind)
+    syncEscort(game.current, demoMission(0), true); game.current.escort.demo = true
+    setDemoMode(true); setPlaying(true); setNotice('idle'); canvas.current?.focus()
   }
   const close = () => { stop('paused'); setOpen(false) }
   const toggleMinimal = () => {
@@ -603,6 +1020,7 @@ function Arcade({ sessionId, useSessionStatus, t }) {
   const pointerPosition = event => {
     const bounds = event.currentTarget.getBoundingClientRect()
     input.current.targetX = (event.clientX - bounds.left) * game.current.width / bounds.width
+    input.current.targetY = (event.clientY - bounds.top) * game.current.height / bounds.height
   }
 
   return h('div', { className: 'dsh-arcade' },
@@ -630,6 +1048,7 @@ function Arcade({ sessionId, useSessionStatus, t }) {
           h('div', { className: 'arcade-game-heading' }, h('div', null, h('h3', null, t(kind)), h('p', null, t(`${kind}Description`))), h('span', { className: 'arcade-orientation' }, t(orientation))),
           h('div', { className: 'arcade-scores' }, h('span', null, t('score'), h('strong', null, String(score).padStart(3, '0'))), h('span', null, t('best'), h('strong', null, String(best[scoreKey] || 0).padStart(3, '0')))),
           kind === 'tank' && h('div', { className: 'arcade-tank-hud' }, h('span', null, t('lives'), ' ', tankLives, ' / 3'), h('span', null, t('base'), ' · ', t(game.current.base.destroyed ? 'destroyed' : 'intact'))),
+          h('div', { className: 'arcade-escort-info' }, h('small', null, t(demoMode ? 'demoHint' : 'liveHint')), h('button', { type: 'button', onClick: startDemo, disabled: status?.running || !!status?.pendingInteraction || !canPlay }, t('demo'))),
       h('div', { className: 'arcade-arena', ref: arena }, h('div', { className: 'arcade-stage', style: minimal ? { width: '100%', height: '100%' } : stageSize },
         h('canvas', {
           ref: canvas, width: selected.width, height: selected.height, tabIndex: 0, 'aria-label': t('canvas'), onKeyDown: keyDown, onKeyUp: keyUp,
@@ -639,14 +1058,15 @@ function Arcade({ sessionId, useSessionStatus, t }) {
           onBlur: clearInput,
         }),
         !playing && h('div', { className: 'arcade-curtain' }, gameIcon(kind, 'arcade-curtain-icon'), h('strong', null, t(over ? kind === 'tank' && game.current.base.destroyed ? 'baseLost' : 'over' : notice === 'idle' ? 'idle' : 'paused')),
-          h('button', { type: 'button', className: 'arcade-primary', disabled: !canPlay, onClick: start }, t(over ? 'restart' : game.current.time ? 'resume' : 'start'))))),
+          escortSummary && h('div', { className: 'arcade-escort-summary', role: 'status' }, h('strong', null, t(demoMode ? 'demoEnd' : 'escortEnd')), h('small', null, t('escortStats')), h('span', null, `${escortSummary.total} / ${escortSummary.completed} / ${escortSummary.failed} / ${escortSummary.kills}`), h('small', null, `${t('score')} ${escortSummary.score}`)),
+          h('button', { type: 'button', className: 'arcade-primary', disabled: !canPlay, onClick: start }, t(over || escortSummary ? 'restart' : game.current.time ? 'resume' : 'start'))))),
       h('p', { className: 'arcade-hint' }, t(`${kind}Hint`)),
       h('div', { className: 'arcade-toolbar' },
-        h('div', { className: 'arcade-controls' }, pad('ArrowLeft', 'left'), ...(kind === 'plane' ? [] : [pad('ArrowUp', 'up'), pad('ArrowDown', 'down')]), pad('ArrowRight', 'right'), kind === 'tank' && pad('Space', 'fire')),
+        h('div', { className: 'arcade-controls' }, pad('ArrowLeft', 'left'), pad('ArrowUp', 'up'), pad('ArrowDown', 'down'), pad('ArrowRight', 'right'), kind === 'tank' && pad('Space', 'fire')),
         h('div', { className: 'arcade-actions' }, h('button', { type: 'button', disabled: !canPlay, onClick: () => playing ? stop('paused') : start() }, t(playing ? 'pause' : 'resume')), h('button', { type: 'button', onClick: () => reset(kind) }, t('restart')))),
       saveError && h('p', { className: 'arcade-hint' }, t('saveError')),
       h('small', { className: 'arcade-footnote' }, t('resetHint')))),
-      h('footer', { className: 'arcade-status', role: 'status' }, h('span', { className: `arcade-dot ${status?.running ? 'working' : ''}` }), t(status?.pendingInteraction ? 'attention' : notice !== 'idle' && notice !== 'paused' && notice !== 'over' ? notice : status?.running ? 'working' : playing ? 'playing' : 'idle')),
+      h('footer', { className: 'arcade-status', role: 'status' }, h('span', { className: `arcade-dot ${status?.running ? 'working' : ''}` }), t(status?.pendingInteraction ? 'attention' : demoMode && playing ? 'demoRunning' : notice !== 'idle' && notice !== 'paused' && notice !== 'over' ? notice : status?.running ? 'working' : playing ? 'playing' : 'idle')),
       minimal && h('div', { className: 'arcade-mini-tools' }, dragHandle('arcade-mini-drag'),
         h('button', { type: 'button', onClick: () => playing ? stop('paused') : start(), disabled: !canPlay, 'aria-label': t(playing ? 'pause' : 'resume'), title: t(playing ? 'pause' : 'resume') }, playing ? 'Ⅱ' : '▷'),
         h('button', { type: 'button', onClick: toggleMinimal, 'aria-label': t('restore'), title: t('restore') }, '↗'),

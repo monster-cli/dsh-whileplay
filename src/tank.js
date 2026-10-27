@@ -55,6 +55,7 @@ function tankBurst(game, rect) {
 
 function hitPlayerTank(game) {
   if (game.invulnerable > 0) return
+  if (game.escort?.shield) { game.escort.shield = 0; game.invulnerable = 1.5; return }
   tankBurst(game, game.player)
   game.lives--
   if (game.lives <= 0) { game.over = true; return }
@@ -81,7 +82,7 @@ function stepTankBullet(game, shot, dt) {
     }
     if (shot.team === 'player') {
       const enemy = game.enemies.find(item => !item.destroyed && tankOverlaps(shot, item))
-      if (enemy) { shot.hit = true; enemy.destroyed = true; game.score += 100; tankBurst(game, enemy) }
+      if (enemy) { shot.hit = true; damageMissionTank(game, enemy) }
     } else if (tankOverlaps(shot, game.player)) { shot.hit = true; hitPlayerTank(game) }
     if (!shot.hit) {
       const opposing = game.bullets.find(other => other !== shot && !other.hit && other.team !== shot.team && tankOverlaps(shot, other))
@@ -101,7 +102,7 @@ export function stepTank(game, input, dt, random) {
   const key = held.includes(input.direction) ? input.direction : held.at(-1)
   if (key) moveTank(game, game.player, keyDirections[key], 98 * dt)
   if ((input.keys.has('Space') || input.pointer) && game.player.cooldown <= 0) {
-    shootTank(game, game.player, 'player'); game.player.cooldown = 0.3
+    shootTank(game, game.player, 'player'); game.player.cooldown = game.escort?.dual > 0 ? 0.13 : 0.3
   }
   if (game.spawn <= 0 && game.enemies.length < 4) {
     const start = Math.floor(random() * 3)
@@ -158,7 +159,14 @@ export function drawTank(ctx, game, palette) {
     ctx.fillStyle = color; ctx.fillRect(-2, -18, 4, 18)
     ctx.restore()
   }
-  game.enemies.forEach(enemy => tank(enemy, palette.enemy))
+  game.enemies.forEach(enemy => {
+    tank(enemy, enemy.missionCall ? palette.food : palette.enemy)
+    if (enemy.missionCall) {
+      ctx.strokeStyle = palette.food; ctx.strokeRect(enemy.x - 2, enemy.y - 2, 30, 30)
+      ctx.fillStyle = palette.ink; ctx.font = '10px sans-serif'; ctx.textAlign = 'center'
+      ctx.fillText(`${enemy.missionCall.name.slice(0, 12)} · ${enemy.hp}`, Math.max(50, Math.min(game.width - 50, enemy.x + 13)), Math.max(12, enemy.y - 6)); ctx.textAlign = 'left'
+    }
+  })
   if (!game.over || game.lives > 0) tank(game.player, palette.accent)
   if (game.invulnerable > 0 && !game.over) {
     ctx.strokeStyle = palette.accent; ctx.lineWidth = 1
@@ -169,4 +177,45 @@ export function drawTank(ctx, game, palette) {
     ctx.strokeStyle = palette.food; ctx.lineWidth = 2
     ctx.beginPath(); ctx.arc(burst.x, burst.y, 3 + (0.3 - burst.life) * 45, 0, Math.PI * 2); ctx.stroke()
   }
+}
+
+/** Mission arrivals obey the same entrance occupancy rules as ordinary tanks. */
+export function spawnMissionTank(game, call) {
+  if (game.enemies.filter(enemy => enemy.missionCall && !enemy.destroyed).length >= 2 || game.enemies.length >= 6) return false
+  for (const x of [3, 195, 387]) {
+    const enemy = { x, y: 3, w: 26, h: 26, direction: 'down', cooldown: 1, decision: 1, hp: 3, missionCall: call, missionTurn: game.escort.turn }
+    if (tankBlocked(game, enemy, enemy)) continue
+    game.enemies.push(enemy); return true
+  }
+  return false
+}
+
+export function damageMissionTank(game, enemy, amount = 1) {
+  if (enemy.destroyed) return
+  enemy.hp = (enemy.hp ?? 1) - amount
+  if (enemy.hp > 0) return
+  enemy.destroyed = true; game.score += enemy.missionCall ? 200 : 100; tankBurst(game, enemy)
+  if (enemy.missionCall) {
+    enemy.missionCall.defeated = true
+    if (enemy.missionTurn === game.escort.turn) game.escort.kills++
+  }
+}
+
+/** Flood-fill lanes reachable from the player; supplies never appear inside walls or the base. */
+export function missionTankCells(game) {
+  const start = { col: Math.round((game.player.x - 3) / 32), row: Math.round((game.player.y - 3) / 32) }
+  const queue = [start], visited = new Set([`${start.col},${start.row}`]), free = []
+  for (let i = 0; i < queue.length; i++) {
+    const { col, row } = queue[i]
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const c = col + dx, r = row + dy, key = `${c},${r}`
+      if (c < 0 || c >= 13 || r < 0 || r >= 13 || visited.has(key)) continue
+      visited.add(key)
+      const rect = { x: c * 32 + 3, y: r * 32 + 3, w: 26, h: 26 }
+      if (tankBlocked(game, rect, game.player)) continue
+      queue.push({ col: c, row: r })
+      if (!tankOverlaps(rect, game.player) && !game.escort.drops.some(drop => tankOverlaps(rect, drop))) free.push({ x: c * 32 + 6, y: r * 32 + 6 })
+    }
+  }
+  return free
 }

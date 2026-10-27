@@ -25,8 +25,11 @@ test('client pauses on completion and attention, preserves rounds and disposes i
   const before = Object.fromEntries(Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]))
   for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { value, configurable: true, writable: true })
   let snapshot = new Map([['session-a', { running: true }]])
+  let projection
   const subscribers = new Set(), disposers = []
   const useSessionStatus = selector => selector(React.useSyncExternalStore(fn => { subscribers.add(fn); return () => subscribers.delete(fn) }, () => snapshot))
+  const useProjection = key => { assert.equal(key, 'whileplayMission'); return React.useSyncExternalStore(fn => { subscribers.add(fn); return () => subscribers.delete(fn) }, () => projection) }
+  const project = async value => act(async () => { projection = value; subscribers.forEach(fn => fn()) })
   const update = async value => act(async () => { snapshot = new Map([['session-a', value]]); subscribers.forEach(fn => fn()) })
   win.__ModuleLoader__ = { load: row => { definition = row.factory(name => { assert.equal(name, 'react'); return React }) } }
   win.eval(readFileSync(new URL('../client.js', import.meta.url), 'utf8'))
@@ -44,7 +47,7 @@ test('client pauses on completion and attention, preserves rounds and disposes i
   try {
     definition.apply(ctx)
     assert.equal(win.document.querySelectorAll('style[data-plugin]').length, 1)
-    await act(async () => root.render(React.createElement(component, { sessionId: 'session-a', useSessionStatus, t: key => labels[key] })))
+    await act(async () => root.render(React.createElement(component, { sessionId: 'session-a', useSessionStatus, useProjection, t: key => labels[key] })))
     assert.equal(JSON.parse(win.localStorage.getItem('dsh-whileplay.best.v1')).snake, 30)
     await click(win.document.querySelector('.arcade-launch'))
     await click(button('开始游戏'))
@@ -78,6 +81,37 @@ test('client pauses on completion and attention, preserves rounds and disposes i
     await click(button('继续'))
     await act(async () => win.dispatchEvent(new win.Event('blur')))
     assert.equal(frames.size, 0)
+    await project({ turn: 100, seq: 101, running: true, total: 1, completed: 0, failed: 0, calls: [{ id: 'tool-a', name: 'web_search', phase: 'running', seq: 101 }] })
+    await project({ turn: 100, seq: 102, running: false, total: 1, completed: 1, failed: 0, calls: [{ id: 'tool-a', name: 'web_search', phase: 'done', seq: 102 }] })
+    await update({ running: false })
+    assert.match(win.document.querySelector('.arcade-escort-summary').textContent, /1 \/ 1 \/ 0 \/ 0/)
+    await click(button('联动演练'))
+    assert.match(win.document.querySelector('.arcade-escort-info').textContent, /模拟工具调用/)
+    assert.equal(frames.size, 1)
+    const originalRandom = win.Math.random
+    win.Math.random = () => 0
+    await act(async () => {
+      win.document.querySelector('canvas').dispatchEvent(new win.KeyboardEvent('keydown', { code: 'ArrowRight', bubbles: true }))
+      for (let n = 0; n < 620; n++) { const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach(fn => fn(n * 50)) }
+    })
+    win.Math.random = originalRandom
+    assert.match(win.document.querySelector('.arcade-escort-summary').textContent, /5 \/ 5 \/ 1/)
+    assert.equal(frames.size, 0)
+    await click(button('联动演练'))
+    await update({ running: true })
+    await project({ turn: 103, seq: 104, running: true, total: 1, completed: 0, failed: 0, calls: [{ id: 'tool-b', name: 'read_file', phase: 'running', seq: 104 }] })
+    assert.match(win.document.querySelector('.arcade-escort-info').textContent, /游戏不影响任务/)
+    await update({ running: false })
+    for (const [label, width] of [['坦克大战', '416'], ['贪吃蛇', '480']]) {
+      await click(button(label)); await click(button('联动演练'))
+      assert.equal(win.document.querySelector('canvas').getAttribute('width'), width)
+      assert.match(win.document.querySelector('.arcade-escort-info').textContent, /模拟工具调用与 Step 补给/)
+      await act(async () => {
+        for (let n = 0; n < 22; n++) { const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach(fn => fn(n * 50)) }
+      })
+      assert.equal(frames.size, 1, `${label} rehearsal keeps its own game running`)
+    }
+    await click(win.document.querySelector('.arcade-actions button:last-child'))
     await click(button('贪吃蛇'))
     await click(button('开始游戏'))
     for (let n = 0; n < 8; n++) await act(async () => { const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach(fn => fn(n * 50)) })

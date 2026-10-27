@@ -97,6 +97,14 @@ try {
   assert.equal(await canvas.getAttribute('width'), '416')
   assert.equal(await canvas.getAttribute('height'), '416')
   await mkdir(resolve(root, 'artifacts'), { recursive: true })
+  for (const [label, slug] of [['坦克大战', 'tank'], ['贪吃蛇', 'snake']]) {
+    await panel.getByRole('button', { name: label, exact: true }).click()
+    await panel.getByRole('button', { name: '联动演练', exact: true }).click()
+    await page.waitForTimeout(1200)
+    assert.match(await panel.locator('.arcade-escort-info').textContent(), /模拟工具调用与 Step 补给/)
+    await panel.getByRole('button', { name: '暂停', exact: true }).click()
+    await page.screenshot({ path: resolve(root, `artifacts/whileplay-${slug}-mission.png`) })
+  }
   await panel.getByRole('button', { name: '飞机大战', exact: true }).click()
   await page.screenshot({ path: resolve(root, 'artifacts/arcade.png') })
   const lightBackground = await panel.evaluate(el => getComputedStyle(el).backgroundColor)

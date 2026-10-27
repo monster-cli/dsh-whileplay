@@ -9,8 +9,8 @@ const dictionaries = {
     score: '得分', best: '最高分', paused: '已暂停', over: '本局结束', idle: '随时开始，随时停下',
     working: 'AI 正在工作 · 可以玩一小局', ready: 'AI 已结束运行 · 游戏已暂停，请查看回复',
     attention: 'AI 需要你的操作 · 游戏已暂停', unavailable: '会话状态暂不可用 · 游戏已暂停', switched: '已切换会话 · 游戏已暂停',
-    focus: '离开游戏后已暂停', planeHint: '← → 或拖动左右移动，自动射击；击落敌机 +10 分，撞到敌机结束。',
-    snakeHint: '方向键转向，吃到食物得分，避开边界和自己。', tankHint: '方向键移动转向，空格射击；砖墙可击碎，钢墙不可破坏，击毁敌坦克 +100 分。',
+    focus: '离开游戏后已暂停', planeHint: '方向键或拖动移动，自动射击。接住 Step 补给：双发 8 秒、护盾抵挡一次、炸弹清除敌弹并伤害敌机。',
+    snakeHint: '方向键转向，避开边界和自己。工具带来限时果实；Step 补给提供双倍、护盾或减速。', tankHint: '方向键移动，空格射击。工具生成三血精英坦克；Step 补给提供连发、护盾或炸弹。',
     canvas: '游戏画布，点击后可用键盘操作', up: '上', down: '下', left: '左', right: '右', fire: '发射',
     saveError: '浏览器禁止保存，最高分仅保留在本次打开期间。', resetHint: '切换游戏会开始新的一局。',
     library: '游戏库', count: '{count} 款游戏', search: '搜索游戏', all: '全部', flight: '飞行', action: '动作', puzzle: '益智',
@@ -19,6 +19,8 @@ const dictionaries = {
     square: '方形', lives: '生命', base: '基地', intact: '完好', destroyed: '已摧毁', baseLost: '基地被击毁',
     choose: '选择游戏', libraryTip: '找一款喜欢的，随时玩一局。', playing: '游戏进行中',
     minimal: '极简模式', restore: '完整模式', drag: '移动窗口', resize: '调整窗口大小',
+    demo: '联动演练', demoHint: '模拟工具调用与 Step 补给 · 不发送模型请求', liveHint: '工具带来新目标，Step 结束掉补给；游戏不影响任务。',
+    escortEnd: '本次任务已结束', demoEnd: '联动演练结束', escortStats: '工具 / 完成 / 失败 / 目标完成', demoRunning: '联动演练中 · 模拟工具调用',
     n: '上边', s: '下边', e: '右边', w: '左边', nw: '左上角', ne: '右上角', sw: '左下角', se: '右下角',
   },
   en: {
@@ -27,8 +29,8 @@ const dictionaries = {
     score: 'Score', best: 'Best', paused: 'Paused', over: 'Game over', idle: 'Start anytime. Pause anytime.',
     working: 'AI is working · enjoy a little game', ready: 'AI stopped · game paused, check the reply',
     attention: 'AI needs your input · game paused', unavailable: 'Session status unavailable · game paused', switched: 'Session changed · game paused',
-    focus: 'Game paused while away', planeHint: 'Use ← → or drag to steer. Fire automatically. Destroy enemies for +10; a collision ends the round.',
-    snakeHint: 'Arrow keys to turn. Eat food. Avoid walls and yourself.', tankHint: 'Arrows to move and turn, Space to fire. Break bricks; steel blocks shots. Destroy enemy tanks for +100.',
+    focus: 'Game paused while away', planeHint: 'Arrows or drag to move; auto fire. Catch Step supplies: twin shot for 8s, one-hit shield, or a bomb clearing enemy shots and damaging aircraft.',
+    snakeHint: 'Arrows to turn; avoid walls and yourself. Tools spawn timed fruit; Steps provide double score, a shield or slow motion.', tankHint: 'Arrows to move, Space to fire. Tools spawn armored tanks; Steps provide rapid fire, a shield or a bomb.',
     canvas: 'Game canvas. Click to use keyboard controls', up: 'Up', down: 'Down', left: 'Left', right: 'Right', fire: 'Fire',
     saveError: 'Browser storage is blocked. Best scores last only for this visit.', resetHint: 'Switching games starts a fresh round.',
     library: 'Game library', count: '{count} games', search: 'Search games', all: 'All', flight: 'Flight', action: 'Action', puzzle: 'Puzzle',
@@ -37,6 +39,8 @@ const dictionaries = {
     square: 'Square', lives: 'Lives', base: 'Base', intact: 'Intact', destroyed: 'Destroyed', baseLost: 'Base destroyed',
     choose: 'Choose a game', libraryTip: 'Pick a favorite for a little break.', playing: 'Playing',
     minimal: 'Minimal mode', restore: 'Full mode', drag: 'Move window', resize: 'Resize window',
+    demo: 'Try task escort', demoHint: 'Simulated tools and Step supplies · no model requests', liveHint: 'Tools spawn aircraft; completed Steps drop supplies. Play never changes the task.',
+    escortEnd: 'Task ended', demoEnd: 'Rehearsal ended', escortStats: 'Tools / Done / Failed / Targets', demoRunning: 'Rehearsal · simulated tool calls',
     n: 'Top', s: 'Bottom', e: 'Right', w: 'Left', nw: 'Top left', ne: 'Top right', sw: 'Bottom left', se: 'Bottom right',
   },
 }
@@ -59,8 +63,9 @@ function gameOrientation(spec) {
   return spec.height === spec.width ? 'square' : spec.height > spec.width ? 'portrait' : 'landscape'
 }
 
-function Arcade({ sessionId, useSessionStatus, t }) {
+function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, t }) {
   const status = useSessionStatus(snapshot => snapshot.get(sessionId))
+  const mission = useProjection('whileplayMission')
   const [open, setOpen] = useState(false)
   const [kind, setKind] = useState('plane')
   const [playing, setPlaying] = useState(false)
@@ -85,10 +90,16 @@ function Arcade({ sessionId, useSessionStatus, t }) {
   const scoreKey = kind === 'plane' ? 'planeShooter' : kind === 'tank' ? 'tankClassic' : kind
   const canvas = useRef(null)
   const game = useRef(createGame('plane'))
+  game.current.language = t('title') === 'Whileplay' ? 'en' : 'zh'
   const input = useRef({ keys: new Set(), direction: null, pointer: false })
   const previous = useRef({ sessionId, running: undefined })
   const scores = useRef({})
-  const clearInput = () => { input.current.keys.clear(); input.current.pointer = false; input.current.direction = null; input.current.targetX = undefined }
+  const latestMission = useRef(mission)
+  latestMission.current = mission
+  const missionBinding = useRef({ sessionId, initialized: false })
+  const [demoMode, setDemoMode] = useState(false)
+  const [escortSummary, setEscortSummary] = useState(null)
+  const clearInput = () => { input.current.keys.clear(); input.current.pointer = false; input.current.direction = null; input.current.targetX = undefined; input.current.targetY = undefined }
   const stop = reason => { clearInput(); setPlaying(false); setNotice(reason) }
   const windowOptions = { minimal, ratio: game.current.width / game.current.height }
 
@@ -134,6 +145,23 @@ function Arcade({ sessionId, useSessionStatus, t }) {
   }, [sessionId, status?.running, status?.pendingInteraction])
 
   useEffect(() => {
+    if (missionBinding.current.sessionId !== sessionId) {
+      missionBinding.current = { sessionId, initialized: false }
+      game.current = createGame(kind); setScore(0); setOver(false); setEscortSummary(null); setDemoMode(false)
+      if (canvas.current) drawGame(canvas.current.getContext('2d'), game.current, canvasPalette(canvas.current))
+    }
+    if (!mission) return
+    if (game.current.escort.demo && !status?.running) return
+    if (game.current.escort.demo) {
+      game.current.escort = createEscort(); setDemoMode(false)
+    }
+    syncEscort(game.current, mission, !missionBinding.current.initialized)
+    missionBinding.current.initialized = true
+    setEscortSummary(game.current.escort.summary)
+    if (open && canvas.current) drawGame(canvas.current.getContext('2d'), game.current, canvasPalette(canvas.current))
+  }, [sessionId, mission, kind, status?.running])
+
+  useEffect(() => {
     const blur = () => stop('focus')
     const visibility = () => { if (document.hidden) stop('focus') }
     window.addEventListener('blur', blur)
@@ -159,6 +187,11 @@ function Arcade({ sessionId, useSessionStatus, t }) {
     let frame, last, cancelled = false
     const tick = now => {
       if (cancelled) return
+      if (game.current.escort.demo) {
+        syncEscort(game.current, demoMission(game.current.time))
+        game.current.escort.demo = true
+        if (game.current.escort.summary) { setEscortSummary(game.current.escort.summary); stop('paused'); return }
+      }
       if (last !== undefined) stepGame(game.current, input.current, (now - last) / 1000)
       last = now
       drawGame(ctx, game.current, canvasPalette(canvas.current))
@@ -180,13 +213,21 @@ function Arcade({ sessionId, useSessionStatus, t }) {
 
   const reset = next => {
     stop('idle'); setKind(next); game.current = createGame(next); setScore(0); setOver(false); setLibraryOpen(false); setTankLives(3)
+    setDemoMode(false); setEscortSummary(null)
+    if (latestMission.current) { syncEscort(game.current, latestMission.current, true); setEscortSummary(game.current.escort.summary) }
     if (canvas.current) drawGame(canvas.current.getContext('2d'), game.current, canvasPalette(canvas.current))
   }
   const canPlay = status?.running !== undefined && !status?.pendingInteraction
   const start = () => {
     if (!canPlay) return
-    if (game.current.over) reset(kind)
+    if (game.current.over || game.current.escort?.summary) reset(kind)
     clearInput(); setNotice('idle'); setPlaying(true); canvas.current.focus()
+  }
+  const startDemo = () => {
+    reset(kind)
+    game.current = createGame(kind)
+    syncEscort(game.current, demoMission(0), true); game.current.escort.demo = true
+    setDemoMode(true); setPlaying(true); setNotice('idle'); canvas.current?.focus()
   }
   const close = () => { stop('paused'); setOpen(false) }
   const toggleMinimal = () => {
@@ -249,6 +290,7 @@ function Arcade({ sessionId, useSessionStatus, t }) {
   const pointerPosition = event => {
     const bounds = event.currentTarget.getBoundingClientRect()
     input.current.targetX = (event.clientX - bounds.left) * game.current.width / bounds.width
+    input.current.targetY = (event.clientY - bounds.top) * game.current.height / bounds.height
   }
 
   return h('div', { className: 'dsh-arcade' },
@@ -276,6 +318,7 @@ function Arcade({ sessionId, useSessionStatus, t }) {
           h('div', { className: 'arcade-game-heading' }, h('div', null, h('h3', null, t(kind)), h('p', null, t(`${kind}Description`))), h('span', { className: 'arcade-orientation' }, t(orientation))),
           h('div', { className: 'arcade-scores' }, h('span', null, t('score'), h('strong', null, String(score).padStart(3, '0'))), h('span', null, t('best'), h('strong', null, String(best[scoreKey] || 0).padStart(3, '0')))),
           kind === 'tank' && h('div', { className: 'arcade-tank-hud' }, h('span', null, t('lives'), ' ', tankLives, ' / 3'), h('span', null, t('base'), ' · ', t(game.current.base.destroyed ? 'destroyed' : 'intact'))),
+          h('div', { className: 'arcade-escort-info' }, h('small', null, t(demoMode ? 'demoHint' : 'liveHint')), h('button', { type: 'button', onClick: startDemo, disabled: status?.running || !!status?.pendingInteraction || !canPlay }, t('demo'))),
       h('div', { className: 'arcade-arena', ref: arena }, h('div', { className: 'arcade-stage', style: minimal ? { width: '100%', height: '100%' } : stageSize },
         h('canvas', {
           ref: canvas, width: selected.width, height: selected.height, tabIndex: 0, 'aria-label': t('canvas'), onKeyDown: keyDown, onKeyUp: keyUp,
@@ -285,14 +328,15 @@ function Arcade({ sessionId, useSessionStatus, t }) {
           onBlur: clearInput,
         }),
         !playing && h('div', { className: 'arcade-curtain' }, gameIcon(kind, 'arcade-curtain-icon'), h('strong', null, t(over ? kind === 'tank' && game.current.base.destroyed ? 'baseLost' : 'over' : notice === 'idle' ? 'idle' : 'paused')),
-          h('button', { type: 'button', className: 'arcade-primary', disabled: !canPlay, onClick: start }, t(over ? 'restart' : game.current.time ? 'resume' : 'start'))))),
+          escortSummary && h('div', { className: 'arcade-escort-summary', role: 'status' }, h('strong', null, t(demoMode ? 'demoEnd' : 'escortEnd')), h('small', null, t('escortStats')), h('span', null, `${escortSummary.total} / ${escortSummary.completed} / ${escortSummary.failed} / ${escortSummary.kills}`), h('small', null, `${t('score')} ${escortSummary.score}`)),
+          h('button', { type: 'button', className: 'arcade-primary', disabled: !canPlay, onClick: start }, t(over || escortSummary ? 'restart' : game.current.time ? 'resume' : 'start'))))),
       h('p', { className: 'arcade-hint' }, t(`${kind}Hint`)),
       h('div', { className: 'arcade-toolbar' },
-        h('div', { className: 'arcade-controls' }, pad('ArrowLeft', 'left'), ...(kind === 'plane' ? [] : [pad('ArrowUp', 'up'), pad('ArrowDown', 'down')]), pad('ArrowRight', 'right'), kind === 'tank' && pad('Space', 'fire')),
+        h('div', { className: 'arcade-controls' }, pad('ArrowLeft', 'left'), pad('ArrowUp', 'up'), pad('ArrowDown', 'down'), pad('ArrowRight', 'right'), kind === 'tank' && pad('Space', 'fire')),
         h('div', { className: 'arcade-actions' }, h('button', { type: 'button', disabled: !canPlay, onClick: () => playing ? stop('paused') : start() }, t(playing ? 'pause' : 'resume')), h('button', { type: 'button', onClick: () => reset(kind) }, t('restart')))),
       saveError && h('p', { className: 'arcade-hint' }, t('saveError')),
       h('small', { className: 'arcade-footnote' }, t('resetHint')))),
-      h('footer', { className: 'arcade-status', role: 'status' }, h('span', { className: `arcade-dot ${status?.running ? 'working' : ''}` }), t(status?.pendingInteraction ? 'attention' : notice !== 'idle' && notice !== 'paused' && notice !== 'over' ? notice : status?.running ? 'working' : playing ? 'playing' : 'idle')),
+      h('footer', { className: 'arcade-status', role: 'status' }, h('span', { className: `arcade-dot ${status?.running ? 'working' : ''}` }), t(status?.pendingInteraction ? 'attention' : demoMode && playing ? 'demoRunning' : notice !== 'idle' && notice !== 'paused' && notice !== 'over' ? notice : status?.running ? 'working' : playing ? 'playing' : 'idle')),
       minimal && h('div', { className: 'arcade-mini-tools' }, dragHandle('arcade-mini-drag'),
         h('button', { type: 'button', onClick: () => playing ? stop('paused') : start(), disabled: !canPlay, 'aria-label': t(playing ? 'pause' : 'resume'), title: t(playing ? 'pause' : 'resume') }, playing ? 'Ⅱ' : '▷'),
         h('button', { type: 'button', onClick: toggleMinimal, 'aria-label': t('restore'), title: t('restore') }, '↗'),

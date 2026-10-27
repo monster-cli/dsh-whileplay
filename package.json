@@ -1,17 +1,36 @@
 {
   "name": "dsh-whileplay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Play small classic games while DeepSeek Harness is working",
   "type": "module",
   "main": "index.js",
-  "exports": { ".": "./index.js", "./client": "./client.js", "./package.json": "./package.json" },
-  "files": ["index.js", "client.js", "cordis.patch.yml", "README.md", "LICENSE"],
-  "engines": { "node": "^22.19.0 || >=24.0.0" },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "mission.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
-      "inject": ["@deepseek-ai/dsh-client-ui-conversation", "@deepseek-ai/dsh-client-ui-session", "@deepseek-ai/dsh-client-locale"]
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-locale"
+      ]
     }
   },
   "scripts": {
@@ -21,5 +40,8 @@
     "test:host": "node scripts/host-smoke.mjs",
     "prepack": "npm run build"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "zod": "4.6.7"
+  }
 }
