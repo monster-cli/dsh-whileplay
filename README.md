@@ -22,9 +22,9 @@ Whileplay 是一个独立的 Web 客户端插件，内置飞机大战、坦克�
 
 - Node.js：`^22.19.0 || >=24.0.0`，并提供 npm。
 - 已安装可运行的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)，使用带聊天界面的 `web` profile。
-- 已验证的宿主版本：`0.2.1-alpha.4`，源码提交 `86a40220`。
+- **兼容性**：目前已在 DeepSeek Harness `0.2.1-alpha.4` 上验证。其他版本尚未验证。
 
-DSH 插件接口尚在演进；其他版本需重新验证。本项目没有额外的 npm 构建依赖，浏览器中的 React 由宿主提供。
+DSH 插件接口尚在演进。本项目没有额外的 npm 构建依赖，浏览器中的 React 由宿主提供。
 
 ## 安装
 
