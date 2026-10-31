@@ -4,6 +4,7 @@ const { useEffect, useRef, useState } = React
 const NS = 'whileplay'
 const dictionaries = {
   zh: {
+    chess: '国际象棋', gomoku: '五子棋', board: '棋类', chessDescription: '运筹每一步，将杀对手', gomokuDescription: '落子成线，攻守之间',
     title: '玩一小局', subtitle: '让等待变成一小局', open: '玩一小局', close: '收起',
     plane: '飞机大战', tank: '坦克大战', snake: '贪吃蛇', start: '开始游戏', resume: '继续', pause: '暂停', restart: '重新开始',
     score: '得分', best: '最高分', paused: '已暂停', over: '本局结束', idle: '随时开始，随时停下',
@@ -25,6 +26,7 @@ const dictionaries = {
     n: '上边', s: '下边', e: '右边', w: '左边', nw: '左上角', ne: '右上角', sw: '左下角', se: '右下角',
   },
   en: {
+    chess: 'Chess', gomoku: 'Gomoku', board: 'Board', chessDescription: 'Plan your moves. Find checkmate.', gomokuDescription: 'Connect five. Balance attack and defense.',
     title: 'Whileplay', subtitle: 'A little play between replies', open: 'Play a little', close: 'Collapse',
     plane: 'Air battle', tank: 'Tank battle', snake: 'Snake', start: 'Start game', resume: 'Resume', pause: 'Pause', restart: 'Restart',
     score: 'Score', best: 'Best', paused: 'Paused', over: 'Game over', idle: 'Start anytime. Pause anytime.',
@@ -70,7 +72,7 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
   const mission = useProjection('whileplayMission')
   const [open, setOpen] = useState(false)
   const [expeditionOpen, setExpeditionOpen] = useState(false)
-  const expeditionFrame = useRef(null)
+  const [boardKind, setBoardKind] = useState(null)
   const [kind, setKind] = useState('plane')
   const [playing, setPlaying] = useState(false)
   const [notice, setNotice] = useState('idle')
@@ -350,15 +352,19 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
 
   const selected = GAME_CATALOG.find(item => item.id === kind)
   const orientation = gameOrientation(selected)
-  const categories = ['all', ...new Set(GAME_CATALOG.map(item => item.category))]
+  const categories = ['all', ...new Set(GAME_CATALOG.map(item => item.category)), 'board']
+  const visibleBoards = ['chess', 'gomoku'].filter(id => ['all', 'board'].includes(category) && `${id} ${t(id)} ${t(`${id}Description`)}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
   const visibleGames = GAME_CATALOG.filter(item => (category === 'all' || item.category === category)
     && `${t(item.id)} ${t(`${item.id}Description`)} ${t(item.category)}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
   const showExpedition = ['all', 'action'].includes(category) && '小队护送远征 expedition todo 子agent 工具 交付物'.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())
   const openExpedition = () => {
-    stop('paused'); expeditionFrame.current = frame; setMinimal(false); setExpeditionOpen(true)
-    setFrame(fitArcadeWindow({ x: 80, y: 30, width: Math.min(800, window.innerWidth - 32), height: Math.min(900, window.innerHeight - 48) }, viewport()))
+    setBoardKind(null)
+    stop('paused'); setMinimal(false); setExpeditionOpen(true)
   }
-  const closeExpedition = () => { setExpeditionOpen(false); if (expeditionFrame.current) setFrame(fitArcadeWindow(expeditionFrame.current, viewport())) }
+  const openBoard = id => {
+    stop('paused'); setBoardKind(id); setMinimal(false); setExpeditionOpen(true)
+  }
+  const closeExpedition = () => { setBoardKind(null); setExpeditionOpen(false) }
   const pointerPosition = event => {
     const bounds = event.currentTarget.getBoundingClientRect()
     input.current.targetX = (event.clientX - bounds.left) * game.current.width / bounds.width
@@ -367,7 +373,7 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
 
   return h('div', { className: 'dsh-arcade' },
     h('button', { className: 'arcade-launch', type: 'button', 'aria-expanded': open, onClick: () => open ? close() : setOpen(true) }, '◈ ', t('open')),
-    open && expeditionOpen && h(Expedition, { key: sessionId, sessionId, frame, panelRef: panel, onMove: beginGesture, gestureProps, onClose: closeExpedition, useSessionStatus, useProjection, useSessions }),
+    open && expeditionOpen && (boardKind ? h(BoardGames, { key: `${sessionId}:${boardKind}`, kind: boardKind, sessionId, frame, panelRef: panel, onMove: beginGesture, gestureProps, onClose: closeExpedition, useSessionStatus, t }) : h(Expedition, { key: sessionId, sessionId, frame, panelRef: panel, onMove: beginGesture, gestureProps, onClose: closeExpedition, useSessionStatus, useProjection, useSessions })),
     open && !expeditionOpen && h('section', {
       ref: panel, className: 'arcade-panel', 'aria-label': t('title'), 'data-orientation': orientation, 'data-minimal': minimal,
       style: { left: frame.x, top: frame.y, width: frame.width, height: frame.height },
@@ -379,14 +385,15 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
         h('button', { className: 'arcade-close', type: 'button', onClick: close, 'aria-label': t('close') }, '×')),
       h('div', { className: 'arcade-body' },
         h('aside', { className: 'arcade-library', 'data-expanded': libraryOpen, 'aria-label': t('library') },
-          h('div', { className: 'arcade-library-heading' }, h('strong', null, t('library')), h('small', null, t('count').replace('{count}', GAME_CATALOG.length + 1))),
+          h('div', { className: 'arcade-library-heading' }, h('strong', null, t('library')), h('small', null, t('count').replace('{count}', GAME_CATALOG.length + 3))),
           h('input', { className: 'arcade-search', type: 'search', value: query, placeholder: t('search'), 'aria-label': t('search'), onChange: event => setQuery(event.target.value) }),
           h('div', { className: 'arcade-filters', role: 'group', 'aria-label': t('choose') }, ...categories.map(item => h('button', { key: item, type: 'button', 'aria-pressed': category === item, onClick: () => setCategory(item) }, t(item)))),
           h('nav', { className: 'arcade-game-list', 'aria-label': t('choose') }, ...visibleGames.map(item => h('button', {
             type: 'button', key: item.id, 'aria-label': t(item.id), 'aria-pressed': item.id === kind, onClick: () => { if (item.id !== kind) reset(item.id); else setLibraryOpen(false) },
           }, gameIcon(item.id, 'arcade-game-icon'), h('span', null, h('strong', null, t(item.id)), h('small', null, t(item.category), ' · ', t(gameOrientation(item)))))),
           showExpedition && h('button', { type: 'button', 'aria-label': '小队护送远征', 'aria-pressed': false, onClick: openExpedition }, h('span', { className: 'exp-library-icon', 'aria-hidden': true }, '⌁'), h('span', null, h('strong', null, '小队护送远征'), h('small', null, '任务联动 · 实时护航'))),
-          !visibleGames.length && !showExpedition && h('p', { className: 'arcade-empty' }, t('noResults'))),
+          ...visibleBoards.map(id => h('button', { key: id, type: 'button', 'aria-label': t(id), 'aria-pressed': false, onClick: () => openBoard(id) }, h('span', { className: 'exp-library-icon', 'aria-hidden': true }, id === 'chess' ? '♞' : '◉'), h('span', null, h('strong', null, t(id)), h('small', null, t('board'), ' · ', t('square'))))),
+          !visibleGames.length && !showExpedition && !visibleBoards.length && h('p', { className: 'arcade-empty' }, t('noResults'))),
           h('small', { className: 'arcade-library-tip' }, t('libraryTip'))),
         h('main', { className: 'arcade-play' },
           h('div', { className: 'arcade-game-heading' }, h('div', null, h('h3', null, t(kind)), h('p', null, t(`${kind}Description`))), h('span', { className: 'arcade-orientation' }, t(orientation))),

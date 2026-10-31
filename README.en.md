@@ -9,19 +9,20 @@
 
 Whileplay is a task-linked arcade plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). Your conversation's Todos become island waypoints, tool calls bring interceptors and supplies, completed subagents join your flight, and delivered files board the transport ship. Move, shoot, dodge, and protect the convoy while AI works.
 
-For a quick round, choose Air Battle, Tank Battle, or Snake, with tool-driven targets and supplies from completed task steps.
+Six games, two ways to spend the wait: Air Battle, Tank Battle, and Snake turn tool activity into targets and supplies. Chess and Gomoku offer a quieter challenge against a local computer opponent or a friend on the same board.
 
 Keep playing while AI works. When the conversation stops running or needs your input, the game pauses so you can return to it.
 
-[Get started](#quick-start) · [Convoy Escort](#convoy-escort-your-current-task-on-the-battlefield) · [Classic games](#three-games-three-ways-to-play-along) · [Releases](https://github.com/monster-cli/dsh-whileplay/releases)
+[Get started](#quick-start) · [Convoy Escort](#convoy-escort-your-current-task-on-the-battlefield) · [Classic games](#three-games-three-ways-to-play-along) · [Board games](#chess-and-gomoku-a-thoughtful-move-between-replies) · [v0.4.0 changes](docs/releases/v0.4.0.md)
 
 ## Why try Whileplay?
 
 - **Each task has its own journey.** The mission title, Todos, subagent flight, and cargo manifest follow your current conversation. Missing data stays visibly empty.
 - **Real-time action you control.** Move in four directions, fire automatically, dash through danger, repair the convoy, and call air support. Game outcomes never control AI execution.
-- **Put the game where you want it.** Move and resize the floating window. The three classic games also offer a compact, game-only mode.
+- **Six games for different moods.** Move, shoot, and escort, or take on a local computer opponent or friend. Board games end with a clear result screen.
+- **Put the game where you want it.** Move and resize the floating window. Opening a game and returning to the library preserves its position and size. Classic and board games offer minimal modes.
 - **Return when you are needed.** The game pauses when the conversation stops running, awaits approval, or asks for input. Resume the round when you are ready.
-- **Try it right after installation.** All four games include a demo requiring no model setup. Classic games support Chinese and English with light and dark themes; Convoy Escort currently has a Chinese interface.
+- **Try it right after installation.** The four action and arcade games include model-free demos; both board games offer local play. Classic and board games support Chinese and English with light and dark themes; Convoy Escort currently has a Chinese interface.
 
 ## See it in action
 
@@ -31,14 +32,23 @@ Open Whileplay beside the chat composer and explore task-linked targets and powe
 
 ## Quick start
 
-You need DeepSeek Harness with its Web profile, Node.js `^22.19.0 || >=24.0.0`, and npm. The current release has been verified with Harness `0.2.1-alpha.4`; other host versions have not been verified.
+You need DeepSeek Harness with its Web profile, Node.js `^22.19.0 || >=24.0.0`, and npm. The current version has been verified with Harness `0.2.1-alpha.4`; other host versions have not been verified.
 
-**1. Download the plugin.** The [v0.3.0 package](https://github.com/monster-cli/dsh-whileplay/releases/download/v0.3.0/dsh-whileplay-0.3.0.tgz) includes Convoy Escort, three classic games, live task integration, Air Battle growth paths, and session checkpoints.
+**1. Get v0.4.0.** The current source version includes all six games. With Git installed, clone the repository and build the package:
+
+```sh
+git clone https://github.com/monster-cli/dsh-whileplay.git
+cd dsh-whileplay
+npm ci
+npm pack
+```
+
+This produces `dsh-whileplay-0.4.0.tgz`. Published packages are available on [GitHub Releases](https://github.com/monster-cli/dsh-whileplay/releases); v0.3.0 does not include Chess or Gomoku.
 
 **2. Install and start.** Run these commands in the directory containing the package:
 
 ```sh
-dsh plugin --profile web add ./dsh-whileplay-0.3.0.tgz
+dsh plugin --profile web add ./dsh-whileplay-0.4.0.tgz
 dsh web
 ```
 
@@ -48,7 +58,7 @@ Restart the Web profile after installation if Harness Web is already running.
 <summary>No global dsh command? Use npx</summary>
 
 ```sh
-npx @deepseek-ai/dsh plugin --profile web add ./dsh-whileplay-0.3.0.tgz
+npx @deepseek-ai/dsh plugin --profile web add ./dsh-whileplay-0.4.0.tgz
 npx @deepseek-ai/dsh web
 ```
 
@@ -56,7 +66,7 @@ npx @deepseek-ai/dsh web
 
 ### Start playing
 
-Open the **complete URL** printed by `dsh web` to authenticate the browser. Click **“◈ Play a little”** beside the chat composer, choose a game, and start playing. Without a running task, choose **“Try task escort”** to explore targets and supplies immediately.
+Open the **complete URL** printed by `dsh web` to authenticate the browser. Click **“◈ Play a little”** beside the chat composer and choose a game. For action and arcade games, choose **“Try task escort”** to explore targets and supplies. For Chess or Gomoku, click **“Start game”** to begin a round.
 
 For live integration, configure your provider credentials in DSH **Settings → Models**, select a model, and run a task. Whileplay follows the current **DSH conversation**, not tasks in other applications, and makes no additional model calls.
 
@@ -116,9 +126,24 @@ Every completed AI step sends a supply worth an extra +20 points when collected.
 
 Destroying a tool aircraft awards +100 points; an armored tool tank, +200. Tool fruit awards +30 and grows the snake by one cell. Snake's double-score effect applies to ordinary food, tool fruit, and supply pickups. Supply lifetimes and active effects freeze while paused.
 
+## Chess and Gomoku: a thoughtful move between replies
+
+Choose Chess or Gomoku in the library's **Board** category. Play against a casual local computer opponent, or select **Two players** to take turns on the same board. The opponent runs entirely in your browser: no model, API key, or online opponent is required.
+
+| Game | Rules and controls | Computer mode |
+| --- | --- | --- |
+| **Chess** | Select a piece to see legal moves, then select a destination. Supports check, checkmate, castling, en passant, and all four promotions | You play White and move first; the computer plays Black. Designed for casual practice |
+| **Gomoku** | Connect five horizontally, vertically, or diagonally on a 15×15 board. Freestyle rules: overlines win, no forbidden moves | You play Black and move first; the computer plays White, pursuing wins and blocking immediate threats |
+
+Both games include move history, last-move highlights, and undo. Gomoku highlights the winning line. Computer-mode undo returns to before your last move; two-player undo removes one move. Use a mouse or touch, or navigate the board with arrow keys and press Enter to move.
+
+**A clear result, an easy rematch.** Computer games show “You win!” or “You lost this round”; two-player games name the winner, and draws have their own result screen. Review the final board or play again immediately. Restarting an unfinished round requires confirmation in a centered dialog.
+
+Games save automatically per conversation in the current browser and resume manually after switching games or refreshing. Minimal mode hides instructions and history while retaining the board and controls. Task completion, pending input, or leaving the page pauses play. Tool calls never change chess rules or make your moves.
+
 ## A small window, an easy return to work
 
-- **Move and resize:** drag the title bar or dotted handle to move the window; drag any edge or corner to resize it. Adjusting the window pauses the game. Click “Resume” when ready.
+- **Move and resize:** drag the title bar or dotted handle to move the window; drag any edge or corner to resize it. Opening a game, switching board games, and returning to the library preserve the same position and size, including your adjustments. Adjusting the window pauses the game. Click “Resume” when ready.
 - **Minimal mode (classic games):** hide the library, heading, and toolbar, leaving just the game. Hover to reveal move, pause, and restore controls. These controls stay visible on touch devices.
 - **Automatic pauses:** the game pauses when the conversation stops running, awaits approval or input, or its status becomes unavailable. Leaving the browser window or hiding the page also pauses it. Resume manually when you return.
 
@@ -156,4 +181,4 @@ If you run Harness through npm, use `npx @deepseek-ai/dsh plugin --profile web r
 
 Report bugs or suggest games and new ways to play through [Issues](https://github.com/monster-cli/dsh-whileplay/issues). For source installation, development, and testing, see the [development guide (简体中文)](https://github.com/monster-cli/dsh-whileplay/blob/main/docs/DEVELOPMENT.md).
 
-[MIT License](LICENSE)
+[MIT License](LICENSE) · The chess.js rules engine uses BSD-2-Clause; see [third-party notices](THIRD_PARTY_NOTICES.md).

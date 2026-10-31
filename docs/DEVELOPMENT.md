@@ -6,7 +6,7 @@
 - 调试宿主集成时，准备一份已安装依赖并完成构建的 DeepSeek Harness 源码。
 - Windows 的本地预览脚本使用 PowerShell。
 
-先运行 `npm ci` 安装宿主投影使用的 Zod 校验依赖。客户端交互测试复用 Harness 已安装的 React、ReactDOM 和 jsdom；真实页面测试复用其 Playwright。
+先运行 `npm ci` 安装 Zod 校验依赖和 chess.js 棋规引擎。客户端交互测试复用 Harness 已安装的 React、ReactDOM 和 jsdom；真实页面测试复用其 Playwright。
 
 ## 从源码安装
 
@@ -19,10 +19,10 @@ npm ci
 npm pack
 ```
 
-`npm pack` 会自动构建并生成 `dsh-whileplay-0.3.0.tgz`。安装后重启 Web profile：
+`npm pack` 会自动构建并生成 `dsh-whileplay-0.4.0.tgz`。安装后重启 Web profile：
 
 ```sh
-dsh plugin --profile web add ./dsh-whileplay-0.3.0.tgz
+dsh plugin --profile web add ./dsh-whileplay-0.4.0.tgz
 dsh web
 ```
 
@@ -38,6 +38,17 @@ npm test
 ```
 
 构建生成 `client.js`。该文件是插件分发入口，需要与源码一起提交。
+
+## 棋类游戏
+
+游戏库的「棋类」分类包含国际象棋和五子棋。两款均支持本地人机对弈、同屏双人、悔棋、棋谱、极简显示以及按会话自动存档。电脑走棋不调用模型；任务结束、需要用户操作或页面失焦时暂停，重新打开存档后需手动继续。
+
+- 国际象棋：人机模式玩家执白先行；合法落点、将军和将杀、逼和、王车易位、吃过路兵与四种升变均由 chess.js 校验。电脑使用有时间预算的浅层搜索，定位为休闲对手。
+- 五子棋：人机模式玩家执黑先行；15×15 自由规则，五连及长连获胜，无禁手。电脑优先争胜和防守对方的立即获胜点。
+- `src/board-games.js` 提供规则适配、电脑走棋和存档；`src/board-ui.js` 与 `src/board.css` 提供界面。构建将 chess.js 隔离打包到客户端并保留 BSD-2-Clause 许可声明，不依赖运行时 CDN。
+- `tests/board-games.test.mjs` 覆盖棋规、电脑应手和存档；客户端测试覆盖实际落子、取消电脑应手、悔棋、切换游戏后恢复及极简模式。
+
+棋类功能从 v0.4.0 开始提供。v0.3.0 安装包不包含这两款游戏。
 
 未设置 `DSH_SOURCE_ROOT` 时，客户端交互测试会明确显示为跳过；规则与窗口几何测试照常运行。此结果不代表客户端集成已通过。
 

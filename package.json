@@ -1,7 +1,7 @@
 {
   "name": "dsh-whileplay",
-  "version": "0.3.0",
-  "description": "Task-linked arcade games for DeepSeek Harness: tool-driven targets, step rewards, and a floating mini window.",
+  "version": "0.4.0",
+  "description": "Six games for DeepSeek Harness: task-linked arcade battles, convoy escort, Chess and Gomoku in one floating window.",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -17,7 +17,8 @@
     "cordis.patch.yml",
     "README.md",
     "README.en.md",
-    "LICENSE"
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
@@ -44,6 +45,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "chess.js": "1.4.0",
     "zod": "4.6.7"
   }
 }
