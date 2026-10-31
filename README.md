@@ -34,16 +34,7 @@ Whileplay 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness
 
 需要已安装的 DeepSeek Harness Web profile，以及 Node.js `^22.19.0 || >=24.0.0` 和 npm。当前版本已在 Harness `0.2.1-alpha.4` 上验证，其他宿主版本尚未验证。
 
-**1. 获取 v0.4.0。** 当前源码版包含全部六款游戏。安装 Git 后，克隆仓库并打包：
-
-```sh
-git clone https://github.com/monster-cli/dsh-whileplay.git
-cd dsh-whileplay
-npm ci
-npm pack
-```
-
-生成安装包 `dsh-whileplay-0.4.0.tgz`。已发布的安装包见 [GitHub Releases](https://github.com/monster-cli/dsh-whileplay/releases)；v0.3.0 不包含国际象棋和五子棋。
+**1. 下载插件。** [下载 v0.4.0 安装包](https://github.com/monster-cli/dsh-whileplay/releases/download/v0.4.0/dsh-whileplay-0.4.0.tgz)，包含小队护送远征、飞机大战、坦克大战、贪吃蛇、国际象棋和五子棋，无需克隆源码或自行构建。
 
 **2. 安装并启动。** 在安装包所在目录执行：
 

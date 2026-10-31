@@ -34,16 +34,7 @@ Open Whileplay beside the chat composer and explore task-linked targets and powe
 
 You need DeepSeek Harness with its Web profile, Node.js `^22.19.0 || >=24.0.0`, and npm. The current version has been verified with Harness `0.2.1-alpha.4`; other host versions have not been verified.
 
-**1. Get v0.4.0.** The current source version includes all six games. With Git installed, clone the repository and build the package:
-
-```sh
-git clone https://github.com/monster-cli/dsh-whileplay.git
-cd dsh-whileplay
-npm ci
-npm pack
-```
-
-This produces `dsh-whileplay-0.4.0.tgz`. Published packages are available on [GitHub Releases](https://github.com/monster-cli/dsh-whileplay/releases); v0.3.0 does not include Chess or Gomoku.
+**1. Download the plugin.** [Download the v0.4.0 package](https://github.com/monster-cli/dsh-whileplay/releases/download/v0.4.0/dsh-whileplay-0.4.0.tgz), including Convoy Escort, Air Battle, Tank Battle, Snake, Chess, and Gomoku. No source checkout or build is required.
 
 **2. Install and start.** Run these commands in the directory containing the package:
 
