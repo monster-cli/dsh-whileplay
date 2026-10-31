@@ -1,6 +1,7 @@
 import { createTankState, stepTank, drawTank } from './tank.js'
 import { createEscort, stepEscort, drawEscort } from './mission-game.js'
 import { stepGroundMission, snakeMissionPrize, collectSnakeMissionPrize, rescueMissionSnake, drawGroundMission } from './ground-mission.js'
+import { createFlight, damageFlight } from './flight.js'
 
 /** Game catalog owns display geometry and browsing categories. */
 export const GAME_CATALOG = [
@@ -23,7 +24,7 @@ export function createGame(kind, random = Math.random) {
     placeFood(game, random)
     return game
   }
-  if (kind === 'plane') return { ...base, player: { x: 148, y: 398, w: 24, h: 32 }, enemies: [], bullets: [], bursts: [], cooldown: 0, spawn: 0.35, escort: createEscort() }
+  if (kind === 'plane') return { ...base, player: { x: 148, y: 398, w: 24, h: 32 }, enemies: [], bullets: [], bursts: [], cooldown: 0, spawn: 0.35, escort: createEscort(), flight: createFlight() }
   if (kind === 'tank') return createTankState(base)
   throw new Error(`Unknown game: ${kind}`)
 }
@@ -54,6 +55,7 @@ export function sessionPause(previous, status) {
 export function stepGame(game, input, seconds, random = Math.random) {
   if (game.over) return
   const dt = clamp(seconds, 0, 0.05)
+  if (game.flight?.ready > 0) { game.flight.ready = Math.max(0, game.flight.ready - dt); return }
   game.time += dt
   if (game.kind === 'snake') {
     stepGroundMission(game, dt, random)
@@ -80,37 +82,38 @@ export function stepGame(game, input, seconds, random = Math.random) {
     const player = game.player
     const horizontal = (input.keys.has('ArrowRight') ? 1 : 0) - (input.keys.has('ArrowLeft') ? 1 : 0)
     const vertical = (input.keys.has('ArrowDown') ? 1 : 0) - (input.keys.has('ArrowUp') ? 1 : 0)
-    const distance = 220 * dt / (Math.hypot(horizontal, vertical) || 1)
+    const distance = 220 * (1 + game.flight.upgrades.move * .16) * dt / (Math.hypot(horizontal, vertical) || 1)
     player.x = clamp(player.x + horizontal * distance, 0, game.width - player.w)
     player.y = clamp(player.y + vertical * distance, 0, game.height - player.h)
     if (input.pointer && Number.isFinite(input.targetX)) player.x = clamp(input.targetX - player.w / 2, 0, game.width - player.w)
     if (input.pointer && Number.isFinite(input.targetY)) player.y = clamp(input.targetY - player.h / 2, 0, game.height - player.h)
     game.cooldown -= dt
     if (game.cooldown <= 0) {
-      for (const offset of game.escort.dual > 0 ? [-8, 8] : [0]) game.bullets.push({ x: player.x + player.w / 2 - 2 + offset, y: player.y - 10, w: 4, h: 12 })
+      const fire = Math.max(game.flight.upgrades.fire, game.escort.dual > 0 ? 1 : 0)
+      for (const offset of fire >= 2 ? [-12, 0, 12] : fire ? [-8, 8] : [0]) game.bullets.push({ x: player.x + player.w / 2 - 2 + offset, y: player.y - 10, w: 4, h: 12, vx: fire >= 2 ? offset * 4 : 0, pierce: fire >= 3 })
       game.cooldown += 0.16
     }
     game.spawn -= dt
-    if (game.spawn <= 0) {
+    if (game.spawn <= 0 && game.enemies.length < 20) {
       game.enemies.push({ x: 8 + random() * (game.width - 44), y: -34, w: 28, h: 30, speed: 85 + random() * 55 + Math.min(game.score / 10, 65) })
-      game.spawn += Math.max(0.32, 0.85 - game.score / 1200)
+      game.spawn += game.escort.bosses.length ? 1.2 : Math.max(0.5, 0.85 - game.score / 2000)
     }
     stepEscort(game, dt, random)
     for (const burst of game.bursts) burst.life -= dt
-    for (const bullet of game.bullets) bullet.y -= 380 * dt
+    for (const bullet of game.bullets) { bullet.y -= 380 * dt; bullet.x += (bullet.vx || 0) * dt }
     for (const enemy of game.enemies) {
       if (enemy.hit) continue
       enemy.y += enemy.speed * dt
       const bullet = game.bullets.find(shot => !shot.hit && overlaps(enemy, shot))
       if (bullet) {
-        bullet.hit = true; enemy.hit = true; game.score += 10
+        if (!bullet.pierce) bullet.hit = true
+        enemy.hit = true; game.score += 10
         game.bursts.push({ x: enemy.x + enemy.w / 2, y: enemy.y + enemy.h / 2, life: 0.3 })
       } else if (overlaps(player, enemy) && game.escort.invincible <= 0) {
-        if (game.escort.shield) { game.escort.shield = 0; game.escort.invincible = 1.5; enemy.hit = true }
-        else game.over = true
+        damageFlight(game); enemy.hit = true
       }
     }
-    game.bullets = game.bullets.filter(shot => !shot.hit && shot.y + shot.h > 0)
+    game.bullets = game.bullets.filter(shot => !shot.hit && shot.y + shot.h > 0 && shot.x > -20 && shot.x < game.width + 20).slice(-256)
     game.enemies = game.enemies.filter(enemy => !enemy.hit && enemy.y < game.height + enemy.h)
     game.bursts = game.bursts.filter(burst => burst.life > 0)
   } else {

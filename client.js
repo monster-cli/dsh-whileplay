@@ -224,10 +224,133 @@ function missionTankCells(game) {
   return free
 }
 
-/** Tool names select appearance only; never inspect arguments or execute a tool. */
+/** Plane-only progression. Simulation time freezes with the rest of the game. */
+const FLIGHT_PATHS = {
+  fire: { zh: ['双发', '散射', '穿透'], en: ['Twin shot', 'Spread', 'Pierce'] },
+  guard: { zh: ['护盾', '再生护盾', '紧急救援'], en: ['Shield', 'Regenerating shield', 'Rescue'] },
+  move: { zh: ['轻型引擎', '机动引擎', '擦弹充能'], en: ['Light engine', 'Agile engine', 'Graze charge'] },
+}
+function createFlight() {
+  return { upgrades: { fire: 0, guard: 0, move: 0 }, earned: 0, steps: 0, next: 1, pending: 0, choice: null, choiceId: 0,
+    wave: 0, waveCooldown: 0, overflow: 0, salvage: 0, regen: 0, rescued: false, grazes: 0, ready: 0 }
+}
+function flightUpgradeName(game, path) {
+  const level = game.flight.upgrades[path]
+  return FLIGHT_PATHS[path][game.language === 'en' ? 'en' : 'zh'][Math.min(2, level)]
+}
+function earnFlightSteps(game, count) {
+  const f = game.flight
+  if (!f) return
+  f.steps += count
+  while (f.earned < 9 && f.steps >= f.next) {
+    f.pending++; f.earned++; f.next += 1 + f.earned
+  }
+}
+function chooseFlightUpgrade(game, path) {
+  const f = game.flight
+  if (!f?.choice?.options.includes(path) || f.upgrades[path] >= 3 || game.over) return false
+  f.upgrades[path]++
+  if (path === 'guard') { game.escort.shield = 1; f.regen = 0 }
+  if (path === 'guard' && f.upgrades.guard === 3) f.rescued = false
+  game.escort.drops = game.escort.drops.filter(drop => drop.choiceId !== f.choice.id)
+  f.choice = null
+  game.escort.notice = `${game.language === 'en' ? 'Upgrade' : '升级'} · ${FLIGHT_PATHS[path][game.language === 'en' ? 'en' : 'zh'][f.upgrades[path] - 1]}`
+  game.escort.noticeUntil = game.time + 3
+  return true
+}
+function stepFlight(game, dt) {
+  const f = game.flight, m = game.escort
+  f.ready = Math.max(0, f.ready - dt); f.waveCooldown = Math.max(0, f.waveCooldown - dt)
+  if (f.upgrades.guard >= 2 && !m.shield) {
+    f.regen += dt
+    if (f.regen >= 18) { m.shield = 1; f.regen = 0 }
+  }
+  if (f.pending && !f.choice) {
+    const paths = ['fire', 'guard', 'move'].filter(path => f.upgrades[path] < 3)
+    const offset = f.choiceId % Math.max(1, paths.length)
+    const options = [...paths.slice(offset), ...paths.slice(0, offset)].slice(0, 2)
+    if (options.length) {
+      f.pending--; f.choice = { id: ++f.choiceId, options, banked: false }
+      options.forEach((path, i) => m.drops.push({ x: options.length === 1 ? 148 : i ? 232 : 64, y: 120, w: 24, h: 24,
+        type: 'upgrade', path, choiceId: f.choice.id, ttl: 9, speed: 28 }))
+      m.notice = game.language === 'en' ? 'Choose one upgrade · catch a capsule or use the buttons' : '二选一升级 · 接住胶囊，或点击升级按钮'
+      m.noticeUntil = game.time + 4
+    } else f.pending = 0
+  }
+}
+function damageFlight(game) {
+  const m = game.escort, f = game.flight
+  if (m.invincible > 0 || f?.ready > 0) return
+  if (m.shield) { m.shield = 0; m.invincible = 1.5; if (f) f.regen = 0 }
+  else if (f?.upgrades.guard === 3 && !f.rescued) {
+    f.rescued = true; m.invincible = 3; m.shots = []; game.enemies = []
+    m.notice = game.language === 'en' ? 'Emergency rescue' : '紧急救援生效'; m.noticeUntil = game.time + 3
+  } else game.over = true
+}
+
+/** Bounded, versioned per-session checkpoints; never save input or task bodies. */
+const FLIGHT_SAVE_KEY = 'dsh-whileplay.flights.v1'
+const validNumber = n => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) < 1e9
+function boundedTree(value, depth = 0) {
+  if (depth > 12) return false
+  if (value === null || typeof value === 'boolean') return true
+  if (typeof value === 'number') return validNumber(value)
+  if (typeof value === 'string') return value.length <= 200
+  if (Array.isArray(value)) return value.length <= 512 && value.every(row => boundedTree(row, depth + 1))
+  if (typeof value !== 'object') return false
+  return Object.entries(value).every(([key, row]) => !['__proto__', 'prototype', 'constructor'].includes(key) && boundedTree(row, depth + 1))
+}
+function validFlightSave(g) {
+  if (!g || !boundedTree(g) || g.kind !== 'plane' || g.width !== 320 || g.height !== 480 || typeof g.over !== 'boolean') return false
+  if (![g.time, g.score, g.cooldown, g.spawn, g.player?.x, g.player?.y].every(validNumber) || g.time < 0 || g.score < 0) return false
+  if (g.player.w !== 24 || g.player.h !== 32 || !g.flight || !g.escort) return false
+  const f = g.flight, m = g.escort
+  if (!['fire', 'guard', 'move'].every(path => Number.isInteger(f.upgrades?.[path]) && f.upgrades[path] >= 0 && f.upgrades[path] <= 3)) return false
+  if (!['earned', 'steps', 'next', 'pending', 'choiceId', 'wave', 'waveCooldown', 'overflow', 'salvage', 'regen', 'grazes', 'ready'].every(key => validNumber(f[key]) && f[key] >= 0)) return false
+  if (f.pending > 9 || f.earned > 9 || typeof f.rescued !== 'boolean') return false
+  if (f.choice && (!Number.isInteger(f.choice.id) || !Array.isArray(f.choice.options) || !f.choice.options.length || f.choice.options.length > 2 || !f.choice.options.every(path => ['fire', 'guard', 'move'].includes(path)))) return false
+  if (!['seq', 'total', 'completed', 'failed', 'kills', 'invincible', 'shield', 'dual', 'bombFlash', 'pendingSupply', 'supplyCooldown', 'supplyIndex', 'slow', 'multiplier', 'noticeUntil'].every(key => validNumber(m[key]))) return false
+  if (!(m.turn === null || validNumber(m.turn)) || !(m.stepsSeen === null || validNumber(m.stepsSeen)) || typeof m.running !== 'boolean' || typeof m.demo !== 'boolean') return false
+  const entity = row => row && ['x', 'y', 'w', 'h'].every(key => validNumber(row[key]))
+  const call = row => row && typeof row.id === 'string' && typeof row.name === 'string' && ['running', 'done', 'error'].includes(row.phase)
+    && ['search', 'read', 'edit', 'command', 'tool'].includes(row.type) && validNumber(row.hp) && row.hp > 0 && typeof row.label === 'string' && typeof row.en === 'string'
+  if (typeof m.notice !== 'string' || (m.summary && !['total', 'completed', 'failed', 'kills', 'score'].every(key => validNumber(m.summary[key])))) return false
+  if (!Array.isArray(m.calls) || m.calls.length > 128 || !m.calls.every(call) || !Array.isArray(m.queue) || m.queue.length > 12 || !m.queue.every(call)) return false
+  if (!Array.isArray(m.bosses) || m.bosses.length > 2 || !m.bosses.every(row => entity(row) && call(row.call) && ['age', 'hp', 'fire', 'speed', 'slot'].every(key => validNumber(row[key])))) return false
+  if (!Array.isArray(m.drops) || m.drops.length > 16 || !m.drops.every(row => entity(row) && (row.type !== 'upgrade' || ['fire', 'guard', 'move'].includes(row.path)))) return false
+  if (!Array.isArray(m.shots) || !m.shots.every(row => entity(row) && validNumber(row.vx))) return false
+  if (!Array.isArray(g.enemies) || !g.enemies.every(row => entity(row) && validNumber(row.speed)) || !Array.isArray(g.bullets) || !g.bullets.every(row => entity(row) && (row.hitBosses === undefined || (Array.isArray(row.hitBosses) && row.hitBosses.every(id => typeof id === 'string'))))) return false
+  return Array.isArray(g.bursts) && g.bursts.every(row => ['x', 'y', 'life'].every(key => validNumber(row[key])))
+}
+function readFlightBook(storage) {
+  const raw = storage.getItem(FLIGHT_SAVE_KEY)
+  if (!raw || raw.length > 1500000) return []
+  let book
+  try { book = JSON.parse(raw) } catch { return [] }
+  return book?.version === 1 && Array.isArray(book.rows) ? book.rows.slice(0, 8) : []
+}
+function saveFlight(storage, sessionId, game) {
+  if (!sessionId || game.kind !== 'plane' || !validFlightSave(game)) return false
+  const rows = readFlightBook(storage).filter(row => row && row.sessionId !== sessionId && typeof row.sessionId === 'string').slice(0, 7)
+  rows.unshift({ sessionId: String(sessionId).slice(0, 200), game })
+  storage.setItem(FLIGHT_SAVE_KEY, JSON.stringify({ version: 1, rows }))
+  return true
+}
+function loadFlight(storage, sessionId) {
+  const row = readFlightBook(storage).find(row => row?.sessionId === sessionId)
+  if (!row || !validFlightSave(row.game)) return null
+  const game = row.game
+  // JSON copies call records; reconnect identity before resuming the simulation.
+  for (const boss of game.escort.bosses) if (boss.turn === game.escort.turn) boss.call = game.escort.calls.find(call => call.id === boss.call.id) ?? boss.call
+  game.escort.queue = game.escort.queue.map(call => game.escort.calls.find(row => row.id === call.id) ?? call)
+  game.flight.ready = 1.5
+  return game
+}
+
+/** Tool names select game archetypes; never inspect arguments or execute a tool. */
 function toolAircraft(name) {
   const value = name.toLowerCase()
-  if (/search|browse|web|fetch/.test(value)) return { type: 'search', label: '搜索轰炸机', en: 'Search bomber', hp: 7 }
+  if (/search|browse|web|fetch/.test(value)) return { type: 'search', label: '搜索扫描机', en: 'Search scanner', hp: 7 }
   if (/read|list|glob|find|ls|cat/.test(value)) return { type: 'read', label: '读取运输机', en: 'Read transport', hp: 5 }
   if (/write|edit|patch|replace/.test(value)) return { type: 'edit', label: '工程装甲机', en: 'Engineering armor', hp: 9 }
   if (/exec|shell|bash|terminal|test|command/.test(value)) return { type: 'command', label: '命令重装机', en: 'Command heavy', hp: 11 }
@@ -255,7 +378,9 @@ function syncEscort(game, snapshot, baseline = false) {
   m.total = snapshot.total; m.completed = snapshot.completed; m.failed = snapshot.failed
   const steps = snapshot.steps ?? 0
   if (m.stepsSeen === null) m.stepsSeen = baseline ? steps : 0
-  m.pendingSupply += Math.max(0, steps - m.stepsSeen)
+  const newSteps = Math.max(0, steps - m.stepsSeen)
+  m.pendingSupply += newSteps
+  earnFlightSteps(game, newSteps)
   m.stepsSeen = Math.max(m.stepsSeen, steps)
   for (const call of snapshot.calls) {
     let record = m.calls.find(row => row.id === call.id)
@@ -266,6 +391,7 @@ function syncEscort(game, snapshot, baseline = false) {
       if (snapshot.running && (call.phase === 'running' || (!baseline && call.seq > oldSeq))) {
         // Bound visual backlog without losing the task's real totals.
         if (m.queue.length < 12) m.queue.push(record)
+        else if (game.flight) { game.flight.overflow++; if (game.flight.overflow % 4 === 0) game.flight.salvage = Math.min(3, game.flight.salvage + 1) }
       }
     } else record.phase = call.phase
     if (call.phase !== 'running' && phaseChanged) {
@@ -284,6 +410,7 @@ function syncEscort(game, snapshot, baseline = false) {
 const hit = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
 function stepEscort(game, dt, random = Math.random) {
   const m = game.escort
+  if (game.flight) stepFlight(game, dt)
   m.invincible = Math.max(0, m.invincible - dt)
   m.dual = Math.max(0, m.dual - dt)
   m.bombFlash = Math.max(0, m.bombFlash - dt)
@@ -296,34 +423,73 @@ function stepEscort(game, dt, random = Math.random) {
     m.pendingSupply--; m.supplyIndex++; m.supplyCooldown = 1.8
     m.notice = `Step 完成 · ${supplyName(type, false)}补给入场`; m.noticeUntil = game.time + 3
   }
-  while (m.running && m.bosses.length < 2 && m.queue.length) {
+  if (game.flight?.salvage && m.drops.length < 6) {
+    m.drops.push({ x: 148, y: -24, w: 24, h: 24, type: 'dual' }); game.flight.salvage--
+    m.notice = game.language === 'en' ? 'Busy formation · bonus supply' : '密集工具编队 · 额外补给'; m.noticeUntil = game.time + 3
+  }
+  const newWave = m.running && m.queue.length && !m.bosses.length && (!game.flight || game.flight.waveCooldown <= 0)
+  if (newWave && game.flight) { game.flight.wave++; game.flight.waveCooldown = 2 }
+  while (newWave && m.bosses.length < 2 && m.queue.length) {
     const call = m.queue.shift(), slot = m.bosses.some(boss => boss.slot === 0) ? 1 : 0
-    m.bosses.push({ call, turn: m.turn, slot, x: slot ? 202 : 38, y: -60, w: 64, h: 42, hp: call.hp, fire: 2, age: 0, speed: 85 })
+    m.bosses.push({ call, turn: m.turn, slot, x: slot ? 202 : 38, y: -60, w: 64, h: 42, hp: call.hp, fire: 2, age: 0,
+      speed: ({ read: 70, edit: 65, command: 75 })[call.type] || 85, cargo: false, flash: 0, aimX: null })
     m.notice = `${call.label} · ${call.name.slice(0, 24)}`; m.noticeUntil = game.time + 3
   }
   for (const boss of m.bosses) {
     boss.age += dt
+    boss.flash = Math.max(0, (boss.flash || 0) - dt)
     // Once spawned, flight, firing and lifetime belong entirely to the game.
     boss.y += boss.speed * dt
-    boss.x = (boss.slot ? 202 : 38) + Math.sin(boss.age * 1.3) * 25
+    boss.x = (boss.slot ? 202 : 38) + Math.sin(boss.age * (boss.call.type === 'read' ? .65 : 1.3)) * 25
     if (boss.y >= game.height + boss.h) { boss.gone = true; continue }
     boss.fire -= dt
+    if (boss.call.type === 'command' && boss.fire <= .8 && boss.aimX === null) boss.aimX = game.player.x + game.player.w / 2
     if (boss.fire <= 0 && boss.y > 20) {
-      for (const vx of boss.call.type === 'search' ? [-34, 0, 34] : [0]) m.shots.push({ x: boss.x + boss.w / 2, y: boss.y + boss.h, w: 6, h: 9, vx })
-      boss.fire = 2.4
+      const command = boss.call.type === 'command'
+      for (const vx of boss.call.type === 'search' ? [-55, 0, 55] : [0]) m.shots.push({ x: command ? boss.aimX ?? boss.x + 32 : boss.x + boss.w / 2, y: boss.y + boss.h, w: command ? 12 : 6, h: command ? 26 : 9, vx, speed: command ? 205 : 115 })
+      boss.fire = command ? 3 : boss.call.type === 'read' ? 3.4 : 2.4; boss.aimX = null
     }
     for (const shot of game.bullets) if (!shot.hit && hit(boss, shot)) {
-      shot.hit = true; boss.hp--
+      if (shot.hitBosses?.includes(`${boss.turn}:${boss.call.id}`)) continue
+      const armored = boss.call.type === 'edit' && Math.floor(boss.age / 1.4) % 2 === 0
+      const sideHit = shot.x < boss.x + 16 || shot.x > boss.x + boss.w - 20
+      if (!shot.pierce) shot.hit = true
+      else (shot.hitBosses ||= []).push(`${boss.turn}:${boss.call.id}`)
+      if (armored && !sideHit && !shot.pierce) { boss.flash = .18; continue }
+      boss.hp--
+      if (boss.call.type === 'read' && !boss.cargo && boss.hp <= boss.call.hp / 2) {
+        boss.cargo = true; m.drops.push({ x: boss.x + 20, y: boss.y + 42, w: 24, h: 24, type: 'dual' })
+        m.notice = game.language === 'en' ? 'Cargo released' : '运输机货舱打开 · 补给释放'; m.noticeUntil = game.time + 3
+      }
       if (boss.hp <= 0) {
         defeatEscortBoss(game, boss)
         break
       }
     }
-    if (!boss.gone && hit(game.player, boss)) damage(game)
+    if (!boss.gone && hit(game.player, boss)) damageFlight(game)
   }
-  for (const shot of m.shots) { shot.y += 115 * dt; shot.x += shot.vx * dt; if (hit(game.player, shot)) { shot.hit = true; damage(game) } }
+  for (const shot of m.shots) {
+    shot.y += (shot.speed || 115) * dt; shot.x += shot.vx * dt
+    if (hit(game.player, shot)) { shot.hit = true; damageFlight(game) }
+    else if (game.flight?.upgrades.move >= 3 && !shot.grazed && hit({ x: game.player.x - 14, y: game.player.y - 14, w: game.player.w + 28, h: game.player.h + 28 }, shot)) {
+      shot.grazed = true; game.flight.grazes++; game.score += 5
+      if (game.flight.grazes % 5 === 0) m.dual = 8
+    }
+  }
   for (const drop of m.drops) {
-    drop.y += 90 * dt
+    if (drop.hit) continue
+    drop.y += (drop.speed || 90) * dt
+    if (drop.type === 'upgrade') {
+      drop.ttl -= dt
+      if (drop.ttl <= 0) { drop.hit = true; if (game.flight.choice) game.flight.choice.banked = true; continue }
+      if (!game.flight.choice || game.flight.choice.id !== drop.choiceId) { drop.hit = true; continue }
+      if (hit(game.player, drop)) {
+        const id = drop.choiceId
+        chooseFlightUpgrade(game, drop.path)
+        for (const other of m.drops) if (other.choiceId === id) other.hit = true
+      }
+      continue
+    }
     if (hit(game.player, drop)) {
       drop.hit = true; game.score += 20
       const type = drop.type || 'shield'
@@ -340,7 +506,9 @@ function stepEscort(game, dt, random = Math.random) {
       m.notice = `补给 +20 · ${supplyName(type, false)}${type === 'dual' ? ' 8 秒' : ''}`; m.noticeUntil = game.time + 3
     }
   }
+  const hadBosses = m.bosses.length > 0
   m.bosses = m.bosses.filter(boss => !boss.gone)
+  if (hadBosses && !m.bosses.length && game.flight) game.flight.waveCooldown = 1.2
   m.shots = m.shots.filter(shot => !shot.hit && shot.y < game.height && shot.x > 0 && shot.x < game.width)
   m.drops = m.drops.filter(drop => !drop.hit && drop.y < game.height)
 }
@@ -356,12 +524,6 @@ function defeatEscortBoss(game, boss) {
   game.bursts.push({ x: boss.x + 32, y: boss.y + 21, life: .3, points: 100 })
   m.drops.push({ x: boss.x + 32, y: boss.y + 42, w: 12, h: 12 })
 }
-function damage(game) {
-  const m = game.escort
-  if (m.invincible > 0) return
-  if (m.shield) { m.shield = 0; m.invincible = 1.5 }
-  else game.over = true
-}
 
 function drawEscort(ctx, game, p) {
   const m = game.escort, en = game.language === 'en'
@@ -373,10 +535,25 @@ function drawEscort(ctx, game, p) {
     if (boss.call.type === 'read') ctx.fillRect(x + 24, y + 12, 16, 12)
     else if (boss.call.type === 'edit') { ctx.fillRect(x + 26, y + 10, 12, 4); ctx.fillRect(x + 26, y + 19, 12, 4) }
     else if (boss.call.type === 'command') { ctx.fillRect(x + 7, y + 13, 8, 15); ctx.fillRect(x + 49, y + 13, 8, 15) }
+    if (boss.call.type === 'edit') {
+      const armored = Math.floor(boss.age / 1.4) % 2 === 0
+      ctx.strokeStyle = armored ? p.accent : p.food; ctx.lineWidth = armored ? 4 : 1
+      ctx.strokeRect(x + 16, y + 3, w - 32, h - 6)
+      ctx.fillStyle = p.food; ctx.fillRect(x + 3, y + 14, 10, 10); ctx.fillRect(x + w - 13, y + 14, 10, 10)
+    }
+    if (boss.fire > 0 && boss.fire < .8 && y > 20 && boss.call.type !== 'read') {
+      ctx.strokeStyle = p.food; ctx.globalAlpha = .3 + Math.sin(boss.age * 18) * .15; ctx.lineWidth = 2
+      ctx.beginPath()
+      if (boss.call.type === 'command') { const aim = boss.aimX ?? x + 32; ctx.moveTo(aim, y + h); ctx.lineTo(aim, game.height) }
+      else { ctx.moveTo(x + 32, y + h); ctx.lineTo(x - 55, y + h + 100); ctx.moveTo(x + 32, y + h); ctx.lineTo(x + 119, y + h + 100) }
+      ctx.stroke(); ctx.globalAlpha = 1
+    }
     ctx.fillStyle = p.grid; ctx.fillRect(x, y - 6, w, 3)
     ctx.fillStyle = p.accent; ctx.fillRect(x, y - 6, w * Math.max(0, boss.hp / boss.call.hp), 3)
     ctx.font = '10px sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = p.ink
     ctx.fillText(en ? boss.call.en : boss.call.label, x + 32, y - 12)
+    const hint = ({ search: en ? 'Fan burst' : '扇形弹幕', read: en ? 'Cargo inside' : '击中货舱得补给', edit: en ? 'Flank / wait' : '侧翼弱点 / 等转向', command: en ? 'Charged cannon' : '蓄力重炮' })[boss.call.type]
+    if (hint) { ctx.fillStyle = p.food; ctx.fillText(hint, x + 32, y + h + 25) }
     const phase = boss.call.phase === 'running' ? '' : boss.call.phase === 'error' ? (en ? 'Failed' : '失败') : (en ? 'Done' : '完成')
     ctx.fillText(`${boss.call.name.slice(0, 16)}${phase ? ` · ${phase}` : ''}`, x + 32, y + h + 13)
   }
@@ -384,6 +561,13 @@ function drawEscort(ctx, game, p) {
   ctx.fillStyle = p.food
   for (const shot of m.shots) ctx.fillRect(shot.x, shot.y, shot.w, shot.h)
   for (const drop of m.drops) {
+    if (drop.type === 'upgrade') {
+      ctx.fillStyle = p.accent; ctx.fillRect(drop.x - 8, drop.y - 4, drop.w + 16, drop.h + 8)
+      ctx.fillStyle = p.background; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center'
+      ctx.fillText(({ fire: 'F', guard: '+', move: '»' })[drop.path], drop.x + 12, drop.y + 17)
+      ctx.font = '10px sans-serif'; ctx.fillStyle = p.ink; ctx.fillText(flightUpgradeName(game, drop.path), drop.x + 12, drop.y + 39)
+      continue
+    }
     ctx.fillStyle = drop.type === 'dual' ? p.accent : p.food
     ctx.fillRect(drop.x, drop.y, drop.w, drop.h)
     ctx.fillStyle = p.background; ctx.font = 'bold 14px sans-serif'; ctx.textAlign = 'center'
@@ -398,7 +582,9 @@ function drawEscort(ctx, game, p) {
   ctx.font = '11px sans-serif'; ctx.fillStyle = p.ink
   ctx.fillText(`${m.demo ? (en ? 'DEMO' : '演练') : (en ? 'LIVE' : '任务联动')} · ${m.completed}/${m.total} · ${en ? 'Down' : '击落'} ${m.kills}${m.queue.length ? ` · +${m.queue.length}` : ''}`, 10, 19)
   ctx.fillStyle = p.accent; ctx.font = '10px sans-serif'
-  ctx.fillText(`Step ${m.stepsSeen ?? 0}${m.dual > 0 ? ` · ${supplyName('dual', en)} ${Math.ceil(m.dual)}s` : ''}${m.shield ? ` · ${supplyName('shield', en)}` : ''}${m.pendingSupply ? ` · ${en ? 'Supplies' : '补给待入场'} +${m.pendingSupply}` : ''}`, 10, 35)
+  ctx.fillText(`Step ${m.stepsSeen ?? 0}${game.flight ? ` · ${en ? 'Wave' : '编队'} ${game.flight.wave} · F${game.flight.upgrades.fire} G${game.flight.upgrades.guard} M${game.flight.upgrades.move}` : ''}${m.shield ? ` · ${supplyName('shield', en)}` : ''}`, 10, 35)
+  if (game.flight?.choice) { ctx.fillStyle = p.accent; ctx.fillText(en ? 'Upgrade ready · pick one (1 / 2)' : '二选一升级待领取 · 按 1 / 2 或接胶囊', 10, 59) }
+  if (game.flight?.ready > 0) { ctx.fillStyle = p.accent; ctx.font = 'bold 24px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(en ? 'READY' : '准备继续', game.width / 2, game.height / 2); ctx.textAlign = 'left' }
   const markers = m.calls.filter(call => call.defeated).slice(-3)
   ctx.font = '10px sans-serif'
   markers.forEach((call, i) => { ctx.fillStyle = call.phase === 'running' ? p.food : call.phase === 'error' ? p.enemy : p.accent; ctx.fillText(`${call.phase === 'running' ? '◌' : call.phase === 'error' ? '!' : '✓'} ${call.name.slice(0, 12)}`, 10 + i * 103, game.height - 29) })
@@ -415,6 +601,16 @@ function demoMission(time) {
   const calls = entries.filter(([, , start]) => time >= start).map(([id, name, start, end, failed]) => ({ id, name, phase: time < end ? 'running' : failed ? 'error' : 'done', seq: time < end ? start + 1 : end + 1 }))
   const steps = [1, 4, 7, 12, 17, 21].filter(at => time >= at).length
   return { turn: 0, seq: Math.floor(time * 20), running: time < 29, total: calls.length, completed: calls.filter(call => call.phase !== 'running').length, failed: calls.filter(call => call.phase === 'error').length, calls, steps }
+}
+
+/** A longer plane rehearsal adds a burst of calls and more upgrade opportunities. */
+function demoFlightMission(time) {
+  const base = demoMission(Math.min(time, 28))
+  const burst = Array.from({ length: 16 }, (_, i) => ({ id: `formation-${i}`, name: ['web_search', 'read_file', 'apply_patch', 'shell_exec'][i % 4], phase: time < 22 + i * .35 ? 'running' : 'done', seq: Math.floor((time < 22 + i * .35 ? 12 : 22 + i * .35) * 20) }))
+  const calls = [...base.calls, ...(time >= 12 ? burst : [])].map(call => time >= 29 ? { ...call, phase: call.id === 'demo-test' ? 'error' : 'done' } : call)
+  return { ...base, seq: Math.floor(time * 20), running: time < 42, calls, total: calls.length,
+    completed: calls.filter(call => call.phase !== 'running').length, failed: calls.filter(call => call.phase === 'error').length,
+    steps: [1, 4, 7, 12, 17, 21, 27, 33].filter(at => time >= at).length }
 }
 
 
@@ -547,7 +743,7 @@ function createGame(kind, random = Math.random) {
     placeFood(game, random)
     return game
   }
-  if (kind === 'plane') return { ...base, player: { x: 148, y: 398, w: 24, h: 32 }, enemies: [], bullets: [], bursts: [], cooldown: 0, spawn: 0.35, escort: createEscort() }
+  if (kind === 'plane') return { ...base, player: { x: 148, y: 398, w: 24, h: 32 }, enemies: [], bullets: [], bursts: [], cooldown: 0, spawn: 0.35, escort: createEscort(), flight: createFlight() }
   if (kind === 'tank') return createTankState(base)
   throw new Error(`Unknown game: ${kind}`)
 }
@@ -578,6 +774,7 @@ function sessionPause(previous, status) {
 function stepGame(game, input, seconds, random = Math.random) {
   if (game.over) return
   const dt = clamp(seconds, 0, 0.05)
+  if (game.flight?.ready > 0) { game.flight.ready = Math.max(0, game.flight.ready - dt); return }
   game.time += dt
   if (game.kind === 'snake') {
     stepGroundMission(game, dt, random)
@@ -604,37 +801,38 @@ function stepGame(game, input, seconds, random = Math.random) {
     const player = game.player
     const horizontal = (input.keys.has('ArrowRight') ? 1 : 0) - (input.keys.has('ArrowLeft') ? 1 : 0)
     const vertical = (input.keys.has('ArrowDown') ? 1 : 0) - (input.keys.has('ArrowUp') ? 1 : 0)
-    const distance = 220 * dt / (Math.hypot(horizontal, vertical) || 1)
+    const distance = 220 * (1 + game.flight.upgrades.move * .16) * dt / (Math.hypot(horizontal, vertical) || 1)
     player.x = clamp(player.x + horizontal * distance, 0, game.width - player.w)
     player.y = clamp(player.y + vertical * distance, 0, game.height - player.h)
     if (input.pointer && Number.isFinite(input.targetX)) player.x = clamp(input.targetX - player.w / 2, 0, game.width - player.w)
     if (input.pointer && Number.isFinite(input.targetY)) player.y = clamp(input.targetY - player.h / 2, 0, game.height - player.h)
     game.cooldown -= dt
     if (game.cooldown <= 0) {
-      for (const offset of game.escort.dual > 0 ? [-8, 8] : [0]) game.bullets.push({ x: player.x + player.w / 2 - 2 + offset, y: player.y - 10, w: 4, h: 12 })
+      const fire = Math.max(game.flight.upgrades.fire, game.escort.dual > 0 ? 1 : 0)
+      for (const offset of fire >= 2 ? [-12, 0, 12] : fire ? [-8, 8] : [0]) game.bullets.push({ x: player.x + player.w / 2 - 2 + offset, y: player.y - 10, w: 4, h: 12, vx: fire >= 2 ? offset * 4 : 0, pierce: fire >= 3 })
       game.cooldown += 0.16
     }
     game.spawn -= dt
-    if (game.spawn <= 0) {
+    if (game.spawn <= 0 && game.enemies.length < 20) {
       game.enemies.push({ x: 8 + random() * (game.width - 44), y: -34, w: 28, h: 30, speed: 85 + random() * 55 + Math.min(game.score / 10, 65) })
-      game.spawn += Math.max(0.32, 0.85 - game.score / 1200)
+      game.spawn += game.escort.bosses.length ? 1.2 : Math.max(0.5, 0.85 - game.score / 2000)
     }
     stepEscort(game, dt, random)
     for (const burst of game.bursts) burst.life -= dt
-    for (const bullet of game.bullets) bullet.y -= 380 * dt
+    for (const bullet of game.bullets) { bullet.y -= 380 * dt; bullet.x += (bullet.vx || 0) * dt }
     for (const enemy of game.enemies) {
       if (enemy.hit) continue
       enemy.y += enemy.speed * dt
       const bullet = game.bullets.find(shot => !shot.hit && overlaps(enemy, shot))
       if (bullet) {
-        bullet.hit = true; enemy.hit = true; game.score += 10
+        if (!bullet.pierce) bullet.hit = true
+        enemy.hit = true; game.score += 10
         game.bursts.push({ x: enemy.x + enemy.w / 2, y: enemy.y + enemy.h / 2, life: 0.3 })
       } else if (overlaps(player, enemy) && game.escort.invincible <= 0) {
-        if (game.escort.shield) { game.escort.shield = 0; game.escort.invincible = 1.5; enemy.hit = true }
-        else game.over = true
+        damageFlight(game); enemy.hit = true
       }
     }
-    game.bullets = game.bullets.filter(shot => !shot.hit && shot.y + shot.h > 0)
+    game.bullets = game.bullets.filter(shot => !shot.hit && shot.y + shot.h > 0 && shot.x > -20 && shot.x < game.width + 20).slice(-256)
     game.enemies = game.enemies.filter(enemy => !enemy.hit && enemy.y < game.height + enemy.h)
     game.bursts = game.bursts.filter(burst => burst.life > 0)
   } else {
@@ -727,7 +925,1016 @@ function resizeArcadeWindow(rect, edge, dx, dy, viewport, options = {}) {
   return fitArcadeWindow({ ...sized, x, y }, viewport, options)
 }
 
-const arcadeCSS = ".dsh-arcade {\n  --arcade-bg: var(--dsw-alias-bg-layer-1, #fff);\n  --arcade-soft: var(--dsw-alias-bg-base, #f8f9fb);\n  --arcade-border: var(--dsw-alias-border-l3, #e1e4e9);\n  --arcade-text: var(--dsw-alias-label-primary, #263148);\n  --arcade-muted: var(--dsw-alias-label-secondary, #697386);\n  --arcade-hover: var(--dsw-alias-interactive-bg-hover, #eef0f4);\n  --arcade-accent: var(--dsw-alias-brand-primary-new-colorprimary-new-color, #4d6bfe);\n  --arcade-background: var(--dsw-alias-bg-base, #f8f9fb);\n  --arcade-grid: var(--dsw-alias-border-l1, #e9ecf1);\n  --arcade-ink: var(--dsw-alias-label-primary, #263148);\n  --arcade-obstacle: var(--dsw-alias-label-caption, #aab5c8);\n  --arcade-food: var(--dsw-static-orange-500, #db8e48);\n  --arcade-enemy: var(--dsw-static-red-500, #d56868);\n  font-family: inherit;\n  color: inherit;\n}\n.dsh-arcade * { box-sizing: border-box; }\n.dsh-arcade button { font: inherit; cursor: pointer; border: 1px solid var(--arcade-border); border-radius: var(--dsw-radius-md, 8px); background: transparent; color: var(--arcade-text); padding: 7px 11px; touch-action: manipulation; }\n.dsh-arcade button:hover:not(:disabled) { background: var(--arcade-hover); }\n.dsh-arcade button:focus-visible, .dsh-arcade canvas:focus-visible, .arcade-search:focus-visible { outline: 2px solid var(--arcade-accent); outline-offset: 2px; }\n.dsh-arcade button:disabled { cursor: default; opacity: .4; }\n.dsh-arcade .arcade-launch { background: transparent; color: inherit; border-color: transparent; font-size: 12px; white-space: nowrap; }\n.arcade-panel { position: fixed; z-index: 60; right: auto; bottom: auto; container: arcade-window / inline-size; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--arcade-border); border-radius: 16px; background: var(--arcade-bg); color: var(--arcade-text); box-shadow: 0 16px 64px rgb(0 0 0 / 14%), 0 2px 8px rgb(0 0 0 / 4%); font-size: 13px; text-align: left; line-height: 1.5; }\n.arcade-header { display: flex; gap: 10px; align-items: center; padding: 18px 18px; border-bottom: 1px solid var(--arcade-border); flex-shrink: 0; cursor: grab; touch-action: none; user-select: none; }\n.arcade-header:active { cursor: grabbing; }\n.dsh-arcade .arcade-drag-handle { border: 0; cursor: grab; padding: 0; font-size: 22px; color: var(--arcade-muted); touch-action: none; }\n.dsh-arcade .arcade-mode-toggle { font-size: 11px; white-space: nowrap; padding: 5px 8px; }\n.arcade-heading { flex: 1; }\n.arcade-panel h2 { font-size: 17px; font-weight: 600; margin: 0; }\n.arcade-panel p { margin: 0; }\n.arcade-heading p { color: var(--arcade-muted); margin-top: 2px; font-size: 12px; }\n.dsh-arcade .arcade-close { border: 0; font-size: 22px; line-height: 28px; padding: 0; width: 30px; height: 30px; color: var(--arcade-muted); }\n.dsh-arcade .arcade-menu-toggle { display: none; font-size: 12px; }\n.arcade-body { display: flex; flex: 1; min-height: 0; }\n.arcade-library { flex: 0 0 178px; width: 178px; background: var(--arcade-soft); border-right: 1px solid var(--arcade-border); padding: 20px 12px 16px; display: flex; flex-direction: column; min-height: 0; gap: 14px; }\n.arcade-library-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 4px; }\n.arcade-library-heading strong { font-size: 12px; font-weight: 600; }\n.arcade-library-heading small { font-size: 10px; color: var(--arcade-muted); }\n.arcade-search { display: block; width: 100%; min-width: 0; font: inherit; font-size: 12px; line-height: 20px; padding: 6px 9px; background: var(--arcade-bg); border: 1px solid var(--arcade-border); color: var(--arcade-text); border-radius: 7px; }\n.arcade-search::placeholder { color: var(--arcade-muted); }\n.arcade-filters { display: flex; flex-wrap: wrap; gap: 4px; }\n.dsh-arcade .arcade-filters button { font-size: 11px; border: 0; border-radius: 5px; padding: 3px 7px; color: var(--arcade-muted); }\n.dsh-arcade .arcade-filters button[aria-pressed=true] { color: var(--arcade-text); background: var(--arcade-hover); font-weight: 600; }\n.arcade-game-list { flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 7px; scrollbar-width: thin; }\n.dsh-arcade .arcade-game-list button { flex-shrink: 0; display: flex; align-items: center; gap: 11px; text-align: left; padding: 12px 9px; border-color: transparent; }\n.arcade-game-list button[aria-pressed=true] { background: var(--arcade-bg); border-color: var(--arcade-border); box-shadow: 0 1px 3px rgb(0 0 0 / 3%); }\n.arcade-game-icon { flex-shrink: 0; color: var(--arcade-muted); }\n.arcade-game-list button[aria-pressed=true] .arcade-game-icon { color: var(--arcade-accent); }\n.arcade-game-list strong { display: block; font-size: 12px; font-weight: 500; }\n.arcade-game-list small { display: block; font-size: 10px; color: var(--arcade-muted); margin-top: 3px; }\n.arcade-empty { color: var(--arcade-muted); padding: 12px 5px; font-size: 12px; }\n.arcade-library-tip { color: var(--arcade-muted); font-size: 10px; padding: 4px; }\n.arcade-play { flex: 1; min-width: 0; min-height: 0; padding: 20px 24px 16px; display: flex; flex-direction: column; overflow-y: auto; }\n.arcade-game-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }\n.arcade-game-heading h3 { font-size: 18px; font-weight: 600; margin: 0; }\n.arcade-game-heading p { color: var(--arcade-muted); font-size: 12px; margin-top: 3px; }\n.arcade-orientation { font-size: 10px; color: var(--arcade-muted); background: var(--arcade-soft); border: 1px solid var(--arcade-border); border-radius: 5px; padding: 2px 7px; white-space: nowrap; }\n.arcade-scores { flex-shrink: 0; display: flex; justify-content: space-between; margin: 15px 0 12px; color: var(--arcade-muted); font-size: 11px; }\n.arcade-scores span { display: flex; align-items: baseline; gap: 9px; }\n.arcade-scores strong { color: var(--arcade-text); font: 21px ui-monospace, monospace; letter-spacing: 1px; }\n.arcade-arena { flex: 1; display: grid; place-items: center; min-height: 80px; padding: 4px 0; }\n.arcade-stage { position: relative; width: 100%; border: 1px solid var(--arcade-border); border-radius: 10px; overflow: hidden; background: var(--arcade-soft); }\n.arcade-panel[data-orientation=portrait] .arcade-stage { width: min(100%, 264px, calc((100dvh - 370px) * 2 / 3)); }\n.arcade-panel[data-orientation=square] .arcade-stage { width: min(100%, 360px, calc(100dvh - 430px)); }\n.arcade-tank-hud { display: flex; justify-content: space-between; gap: 12px; font-size: 11px; color: var(--arcade-muted); margin-bottom: 8px; flex-shrink: 0; }\n.arcade-stage canvas { display: block; width: 100%; height: auto; touch-action: none; }\n.arcade-curtain { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: color-mix(in srgb, var(--arcade-bg) 86%, transparent); pointer-events: none; text-align: center; padding: 12px; }\n.arcade-curtain-icon { width: 36px; height: 36px; color: var(--arcade-muted); margin-bottom: 4px; }\n.arcade-curtain strong { font-size: 13px; font-weight: 500; color: var(--arcade-muted); }\n.dsh-arcade .arcade-primary { background: var(--dsw-alias-button-primary-fill, #263148); color: var(--dsw-alias-label-primary-foreground, #fff); border-color: transparent; pointer-events: auto; padding: 8px 18px; }\n.dsh-arcade .arcade-primary:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover, #424c60); }\n.arcade-panel .arcade-hint { flex-shrink: 0; color: var(--arcade-muted); font-size: 11px; margin: 12px 0; text-align: center; }\n.arcade-toolbar { flex-shrink: 0; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }\n.arcade-controls, .arcade-actions { display: flex; gap: 5px; }\n.arcade-controls button { min-width: 30px; padding: 6px 8px; font-size: 11px; touch-action: none; }\n.arcade-actions button { padding: 6px 10px; font-size: 11px; }\n.arcade-footnote { display: block; flex-shrink: 0; color: var(--arcade-muted); font-size: 10px; margin-top: 12px; }\n.arcade-status { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 11px 22px; color: var(--arcade-muted); background: var(--arcade-soft); border-top: 1px solid var(--arcade-border); font-size: 11px; }\n.arcade-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--arcade-muted); flex-shrink: 0; }\n.arcade-dot.working { background: var(--arcade-accent); }\n@container arcade-window (max-width: 600px) {\n  .arcade-header { padding: 14px 16px; gap: 8px; }\n  .dsh-arcade .arcade-menu-toggle { display: block; }\n  .arcade-body { flex-direction: column; }\n  .arcade-library { display: none; width: 100%; flex: 0 0 auto; border-right: 0; border-bottom: 1px solid var(--arcade-border); padding: 12px 16px; gap: 8px; max-height: 240px; }\n  .arcade-library[data-expanded=true] { display: flex; flex: 1; max-height: none; }\n  .arcade-body:has(.arcade-library[data-expanded=true]) .arcade-play { display: none; }\n  .arcade-library-heading, .arcade-library-tip { display: none; }\n  .arcade-game-list { flex: 1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: max-content; align-content: start; max-height: none; }\n  .dsh-arcade .arcade-game-list button { padding: 7px; }\n  .arcade-play { padding: 16px; }\n  .arcade-panel[data-orientation=portrait] .arcade-stage { width: min(100%, 264px, calc((100dvh - 345px) * 2 / 3)); }\n  .arcade-status { padding: 10px 16px; }\n  .arcade-controls, .arcade-actions { gap: 4px; }\n}\n@media (max-height: 620px) {\n  .arcade-play { overflow-y: auto; }\n}\r\n.arcade-resize-handle { position: absolute; z-index: 8; touch-action: none; }\n.arcade-resize-n, .arcade-resize-s { left: 14px; right: 14px; height: 7px; cursor: ns-resize; }\n.arcade-resize-n { top: 0; } .arcade-resize-s { bottom: 0; }\n.arcade-resize-e, .arcade-resize-w { top: 14px; bottom: 14px; width: 7px; cursor: ew-resize; }\n.arcade-resize-e { right: 0; } .arcade-resize-w { left: 0; }\n.arcade-resize-nw, .arcade-resize-ne, .arcade-resize-sw, .arcade-resize-se { width: 16px; height: 16px; }\n.arcade-resize-nw { top: 0; left: 0; cursor: nwse-resize; }\n.arcade-resize-ne { top: 0; right: 0; cursor: nesw-resize; }\n.arcade-resize-sw { bottom: 0; left: 0; cursor: nesw-resize; }\n.arcade-resize-se { bottom: 0; right: 0; cursor: nwse-resize; }\n.arcade-resize-se::after { content: ''; position: absolute; width: 7px; height: 7px; right: 4px; bottom: 4px; border-right: 2px solid var(--arcade-muted); border-bottom: 2px solid var(--arcade-muted); opacity: .4; }\n.arcade-resize-handle:focus-visible { outline: 2px solid var(--arcade-accent); outline-offset: -2px; }\n.arcade-panel[data-minimal=true] { border-radius: 10px; }\n.arcade-panel[data-minimal=true] > .arcade-header,\n.arcade-panel[data-minimal=true] > .arcade-status,\n.arcade-panel[data-minimal=true] .arcade-library,\n.arcade-panel[data-minimal=true] .arcade-play > :not(.arcade-arena) { display: none; }\n.arcade-panel[data-minimal=true] .arcade-body { display: flex; height: 100%; }\n.arcade-panel[data-minimal=true] .arcade-play { display: flex; padding: 0; overflow: hidden; }\n.arcade-panel[data-minimal=true] .arcade-arena { padding: 0; min-height: 0; width: 100%; height: 100%; }\n.arcade-panel[data-minimal=true] .arcade-stage { border: 0; border-radius: 0; }\n.arcade-panel[data-minimal=true] canvas { width: 100%; height: 100%; }\n.arcade-panel[data-minimal=true] .arcade-curtain-icon { display: none; }\n.arcade-panel[data-minimal=true] .arcade-curtain { gap: 10px; }\n.arcade-panel[data-minimal=true] .arcade-curtain strong { font-size: 11px; }\n.arcade-panel[data-minimal=true] .arcade-primary { padding: 6px 10px; font-size: 11px; }\n.arcade-mini-tools { position: absolute; top: 8px; left: 8px; right: 8px; display: flex; justify-content: flex-end; align-items: center; gap: 4px; z-index: 7; opacity: 0; transition: opacity .12s; pointer-events: none; }\n.arcade-panel:hover .arcade-mini-tools, .arcade-mini-tools:focus-within { opacity: 1; }\n.dsh-arcade .arcade-mini-tools button { pointer-events: auto; width: 28px; height: 28px; padding: 0; display: grid; place-items: center; background: color-mix(in srgb, var(--arcade-bg) 94%, transparent); border: 1px solid var(--arcade-border); font-size: 15px; box-shadow: 0 1px 4px rgb(0 0 0 / 8%); }\n.dsh-arcade .arcade-mini-tools .arcade-mini-drag { margin-right: auto; cursor: grab; touch-action: none; font-size: 22px; }\n.arcade-mini-notice { position: absolute; bottom: 8px; left: 8px; right: 8px; padding: 7px 9px; background: var(--arcade-bg); border: 1px solid var(--arcade-border); border-radius: 6px; font-size: 10px; color: var(--arcade-text); z-index: 6; }\n@media (hover: none) { .arcade-mini-tools { opacity: 1; } }\n.arcade-escort-info { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--arcade-muted); font-size: 11px; }\n.dsh-arcade .arcade-escort-info button { flex-shrink: 0; padding: 4px 8px; font-size: 11px; }\n.arcade-escort-summary { display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 14px; border: 1px solid var(--arcade-border); border-radius: 10px; background: var(--arcade-bg); font-size: 12px; }\n.arcade-escort-summary small { font-size: 10px; color: var(--arcade-muted); }\n.arcade-escort-summary span { font-variant-numeric: tabular-nums; font-size: 17px; }\n"
+/** Physical task landmarks, projected from simulation time without extra save state. */
+const ESCORT_ROUTE_NODES = [
+  { id: 'radar', name: '雷达岛', task: '设计交互', x: 126, arrival: 15, berthY: 520 },
+  { id: 'supply', name: '补给岛', task: '实现番茄钟', x: 350, arrival: 36, berthY: 460 },
+  { id: 'reef', name: '礁石水道', task: '联调与检查', x: 240, arrival: 49, berthY: 400 },
+  { id: 'harbor', name: '交付港', task: '交付网页和说明', x: 240, arrival: 62, berthY: 330 },
+]
+
+function escortRouteStage(g) {
+  if (g.mode === 'live') {
+    const todos = g.live?.todos || []
+    const active = todos.findIndex(todo => todo.status === 'in_progress')
+    if (active >= 0) return active
+    const pending = todos.findIndex(todo => todo.status === 'pending')
+    return pending >= 0 ? pending : Math.max(0, todos.length - 1)
+  }
+  const active = g.todos.findIndex(status => status === '进行中')
+  if (active >= 0) return active
+  return g.todos.every(status => status === '已完成') ? 3 : 0
+}
+
+function escortRouteLandmarks(g) {
+  if (g.mode === 'live') {
+    const todos = g.live?.todos || [], stage = escortRouteStage(g), start = Math.max(0, stage - 1)
+    // The current Todo anchors the route. Elapsed play time never advances real work.
+    return todos.slice(start, start + 4).map((todo, offset) => {
+      const index = start + offset, template = ESCORT_ROUTE_NODES[index === todos.length - 1 ? 3 : index % 3]
+      return { ...template, index, task: todo.content, y: 345 + (stage - index) * 240,
+        status: ({ pending: '待处理', in_progress: '进行中', completed: '已完成' })[todo.status] || '待处理', active: index === stage }
+    })
+  }
+  return ESCORT_ROUTE_NODES.map((node, i) => ({ ...node,
+    y: node.berthY + (g.time - node.arrival) * 24,
+    status: g.todos[i], active: i === escortRouteStage(g),
+  }))
+}
+
+// Stable texture noise keeps the terrain identical after pause or save restoration.
+function terrainNoise(n) {
+  const value = Math.sin(n * 127.1 + 311.7) * 43758.5453
+  return value - Math.floor(value)
+}
+
+function terrainIsland(ctx, x, y, rx, ry, seed, time) {
+  ctx.save(); ctx.translate(x, y)
+  const points = Array.from({ length: 32 }, (_, i) => {
+    const a = i / 32 * Math.PI * 2, r = 1 + .085 * Math.sin(a * 5 + seed) + .035 * Math.cos(a * 9)
+    return { x: Math.cos(a) * rx * r, y: Math.sin(a) * ry * r }
+  })
+  const shape = scale => {
+    ctx.beginPath()
+    const last = points[points.length - 1], first = points[0]
+    ctx.moveTo((last.x + first.x) * scale / 2, (last.y + first.y) * scale / 2)
+    for (let i = 0; i < points.length; i++) {
+      const point = points[i], next = points[(i + 1) % points.length]
+      ctx.quadraticCurveTo(point.x * scale, point.y * scale, (point.x + next.x) * scale / 2, (point.y + next.y) * scale / 2)
+    }
+    ctx.closePath()
+  }
+  // Soft underwater shelf and occasional breaking foam, not concentric map outlines.
+  ctx.fillStyle = '#2c6468'; ctx.globalAlpha = .17; shape(1.24); ctx.fill()
+  ctx.globalAlpha = .22; ctx.fillStyle = '#14383f'; ctx.save(); ctx.translate(4, 6); shape(1.07); ctx.fill(); ctx.restore()
+  ctx.globalAlpha = 1
+  const beach = ctx.createLinearGradient(-rx, -ry, rx, ry)
+  beach.addColorStop(0, '#a5a38a'); beach.addColorStop(.55, '#778372'); beach.addColorStop(1, '#465e55')
+  ctx.fillStyle = beach; shape(1); ctx.fill()
+  ctx.save(); shape(.91); ctx.clip()
+  const earth = ctx.createLinearGradient(-rx, -ry, rx, ry)
+  earth.addColorStop(0, '#667550'); earth.addColorStop(.5, '#415d42'); earth.addColorStop(1, '#2e4b3b')
+  ctx.fillStyle = earth; ctx.fillRect(-rx * 1.2, -ry * 1.2, rx * 2.4, ry * 2.4)
+  for (let i = 0; i < 160; i++) {
+    const px = (terrainNoise(seed * 100 + i * 3) * 2 - 1) * rx, py = (terrainNoise(seed * 100 + i * 3 + 1) * 2 - 1) * ry
+    ctx.globalAlpha = .09 + terrainNoise(i + seed) * .13; ctx.fillStyle = i % 3 ? '#a1ad78' : '#172e2a'
+    ctx.fillRect(px, py, 1 + i % 3, 1 + i % 2)
+  }
+  ctx.globalAlpha = 1; ctx.restore()
+  // Small, irregular overlapping crowns form groves rather than a ring of beads.
+  for (let i = 0; i < 22; i++) {
+    const angle = i * 2.4 + seed, r = .4 + terrainNoise(i + seed * 9) * .38
+    const px = Math.cos(angle) * rx * r, py = Math.sin(angle) * ry * r
+    if (Math.abs(px) < 25 && Math.abs(py) < 31) continue
+    ctx.save(); ctx.translate(px, py)
+    ctx.fillStyle = '#1c352c'; ctx.globalAlpha = .45; ctx.beginPath(); ctx.ellipse(3, 4, 8, 10, .4, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1
+    for (let j = 0; j < 5; j++) {
+      const a = j * 2.3 + i, dx = Math.cos(a) * 3, dy = Math.sin(a) * 3
+      ctx.fillStyle = ['#36563b', '#496743', '#5f7850', '#3d5e3f', '#69805a'][j]
+      ctx.beginPath(); ctx.ellipse(dx, dy, 3.8 + j % 2, 5.2, a, 0, Math.PI * 2); ctx.fill()
+    }
+    ctx.restore()
+  }
+  ctx.strokeStyle = '#c1d8ce'; ctx.lineWidth = .9
+  for (let i = 0; i < 12; i++) {
+    const a = i * .52 + seed, swell = Math.sin(time * 1.2 + i) * .018, scale = 1.025 + swell
+    const px = Math.cos(a) * rx * (1 + .085 * Math.sin(a * 5 + seed) + .035 * Math.cos(a * 9)) * scale
+    const py = Math.sin(a) * ry * (1 + .085 * Math.sin(a * 5 + seed) + .035 * Math.cos(a * 9)) * scale
+    ctx.globalAlpha = .12 + Math.max(0, Math.sin(time * 1.5 + i * 2)) * .17
+    ctx.beginPath(); ctx.moveTo(px - Math.sin(a) * 3, py + Math.cos(a) * 3); ctx.lineTo(px + Math.sin(a) * 4, py - Math.cos(a) * 4); ctx.stroke()
+  }
+  ctx.globalAlpha = 1
+  ctx.restore()
+}
+
+function terrainRock(ctx, x, y, radius, seed, time) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(seed)
+  ctx.fillStyle = '#285965'; ctx.globalAlpha = .22; ctx.beginPath(); ctx.ellipse(0, 0, radius * 1.8, radius * 1.15, 0, 0, Math.PI * 2); ctx.fill()
+  ctx.globalAlpha = .18; ctx.strokeStyle = '#c0dbd5'; ctx.lineWidth = .7
+  ctx.beginPath(); ctx.ellipse(0, 2, radius * (1.25 + Math.sin(time * 2 + seed) * .05), radius * .9, 0, .25, Math.PI * 1.15); ctx.stroke(); ctx.globalAlpha = 1
+  ctx.fillStyle = '#36424a'; ctx.beginPath(); ctx.moveTo(-radius, 0); ctx.lineTo(-radius * .5, -radius * .65); ctx.lineTo(radius * .3, -radius * .85); ctx.lineTo(radius, -radius * .1); ctx.lineTo(radius * .7, radius * .6); ctx.lineTo(-radius * .5, radius * .6); ctx.closePath(); ctx.fill()
+  ctx.fillStyle = '#86918a'; ctx.beginPath(); ctx.moveTo(-radius * .5, -radius * .65); ctx.lineTo(radius * .3, -radius * .85); ctx.lineTo(radius * .22, 0); ctx.lineTo(-radius * .8, radius * .15); ctx.closePath(); ctx.fill()
+  ctx.strokeStyle = '#b5b8a5'; ctx.lineWidth = .7; ctx.beginPath(); ctx.moveTo(-radius * .5, -radius * .65); ctx.lineTo(radius * .3, -radius * .85); ctx.lineTo(radius, -radius * .1); ctx.stroke()
+  ctx.strokeStyle = '#3c5054'; ctx.lineWidth = .7
+  ctx.beginPath(); ctx.moveTo(radius * .3, -radius * .78); ctx.lineTo(radius * .17, -radius * .2); ctx.lineTo(radius * .5, radius * .14); ctx.moveTo(-radius * .8, 0); ctx.lineTo(-radius * .2, -radius * .27); ctx.stroke()
+  for (let i = 0; i < 14; i++) {
+    const px = (terrainNoise(i + seed * 17) - .5) * radius * 1.1, py = (terrainNoise(i * 2 + seed) - .7) * radius
+    ctx.fillStyle = i % 2 ? '#b5b8a5' : '#283d42'; ctx.globalAlpha = .2; ctx.fillRect(px, py, .9, .9)
+  }
+  ctx.globalAlpha = 1
+  ctx.restore()
+}
+
+function terrainBuilding(ctx, x, y, w, h, color) {
+  ctx.fillStyle = '#1a302b'; ctx.globalAlpha = .6; ctx.fillRect(x + 4, y + 5, w + 2, h); ctx.globalAlpha = 1
+  ctx.fillStyle = '#9b9b85'; ctx.fillRect(x, y, w, h)
+  ctx.fillStyle = color; ctx.fillRect(x - 2, y - 2, w + 4, h - 3)
+  ctx.strokeStyle = '#c5c6ac'; ctx.globalAlpha = .38; ctx.lineWidth = .6
+  for (let i = 4; i < w; i += 5) { ctx.beginPath(); ctx.moveTo(x + i, y - 1); ctx.lineTo(x + i, y + h - 6); ctx.stroke() }
+  ctx.globalAlpha = 1; ctx.fillStyle = '#344c52'; ctx.fillRect(x + w / 2 - 3, y + h - 5, 6, 5)
+  ctx.strokeStyle = '#c5c6ac'; ctx.lineWidth = .6; ctx.beginPath(); ctx.moveTo(x - 2, y - 2); ctx.lineTo(x + w + 2, y - 2); ctx.lineTo(x + w + 2, y + h - 5); ctx.stroke()
+  ctx.fillStyle = '#3c5457'; ctx.fillRect(x + 4, y + 2, 5, 3)
+  ctx.fillStyle = '#adb5a1'; ctx.fillRect(x + w - 8, y + 3, 4, 4)
+}
+
+function terrainTaskLabel(ctx, node, index) {
+  const left = node.id === 'radar' || node.id === 'reef'
+  const x = left ? 16 : 280, width = 184
+  const anchorX = node.id === 'reef' ? 145 : node.id === 'harbor' ? 335 : node.x
+  const anchorY = node.y + (node.id === 'reef' ? 88 : node.id === 'harbor' ? 72 : 92)
+  const y = Math.max(83, anchorY + 13)
+  if (anchorY < 52 || y + 44 > 679) return
+  const done = node.status === '已完成', accent = done ? '#90bc9d' : node.active ? '#c6dda9' : '#7393a0'
+  ctx.save(); ctx.lineWidth = .8; ctx.strokeStyle = accent; ctx.globalAlpha = .6
+  ctx.beginPath(); ctx.moveTo(anchorX, anchorY); ctx.lineTo(anchorX, y); ctx.stroke(); ctx.globalAlpha = 1
+  ctx.fillStyle = 'rgba(7, 25, 34, .92)'; ctx.strokeStyle = node.active ? '#5d796c' : '#2c4850'
+  ctx.beginPath(); ctx.moveTo(x + 5, y); ctx.lineTo(x + width - 5, y); ctx.quadraticCurveTo(x + width, y, x + width, y + 5); ctx.lineTo(x + width, y + 39); ctx.quadraticCurveTo(x + width, y + 44, x + width - 5, y + 44); ctx.lineTo(x + 5, y + 44); ctx.quadraticCurveTo(x, y + 44, x, y + 39); ctx.lineTo(x, y + 5); ctx.quadraticCurveTo(x, y, x + 5, y); ctx.closePath(); ctx.fill(); ctx.stroke()
+  ctx.fillStyle = accent; ctx.fillRect(x, y + 8, 2, 27)
+  const task = Array.from(String(node.task || '')), title = task.length > 11 ? task.slice(0, 10).join('') + '…' : task.join('')
+  ctx.textAlign = 'left'; ctx.font = '600 13px sans-serif'; ctx.fillText(`${done ? '✓' : String((node.index ?? index) + 1).padStart(2, '0')}  ${title}`, x + 11, y + 18)
+  ctx.font = '10px sans-serif'; ctx.fillStyle = '#9bb3b7'; ctx.fillText(`${node.name} · ${node.status}`, x + 11, y + 34)
+  ctx.restore()
+}
+
+function drawEscortTerrain(ctx, g) {
+  ctx.save(); ctx.beginPath(); ctx.rect(0, 52, 480, 633); ctx.clip()
+  for (const [index, node] of escortRouteLandmarks(g).entries()) {
+    if (node.y < -160 || node.y > 870) continue
+    const { x, y } = node
+    if (node.id === 'radar') {
+      terrainIsland(ctx, x, y, 47, 66, 2, g.time)
+      terrainBuilding(ctx, x - 18, y + 11, 26, 19, '#758579')
+      ctx.fillStyle = '#7c8275'; ctx.fillRect(x - 12, y - 28, 25, 29)
+      ctx.strokeStyle = '#bccac3'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x, y - 21); ctx.lineTo(x - 8, y - 1); ctx.moveTo(x, y - 21); ctx.lineTo(x + 8, y - 1); ctx.stroke()
+      ctx.save(); ctx.translate(x, y - 23); ctx.rotate(Math.sin(g.time * .6) * .7)
+      ctx.fillStyle = '#c2cfc4'; ctx.beginPath(); ctx.ellipse(0, 0, 17, 8, -.3, 0, Math.PI * 2); ctx.fill()
+      ctx.strokeStyle = '#71878a'; ctx.lineWidth = 1; ctx.beginPath(); ctx.ellipse(0, 0, 12, 5, -.3, 0, Math.PI * 2); ctx.moveTo(0, 0); ctx.lineTo(8, -11); ctx.stroke(); ctx.restore()
+      terrainRock(ctx, x + 42, y + 77, 10, .7, g.time)
+    } else if (node.id === 'supply') {
+      terrainIsland(ctx, x, y, 49, 63, 5, g.time)
+      ctx.fillStyle = '#75847f'; ctx.fillRect(x - 14, y + 42, 24, 58)
+      ctx.strokeStyle = '#a6b2a5'; ctx.lineWidth = 1
+      for (let j = 0; j < 7; j++) { ctx.beginPath(); ctx.moveTo(x - 13, y + 45 + j * 8); ctx.lineTo(x + 9, y + 45 + j * 8); ctx.stroke() }
+      terrainBuilding(ctx, x - 25, y - 28, 44, 27, '#a79169')
+      terrainBuilding(ctx, x - 21, y + 8, 22, 18, '#6b8581')
+      ctx.fillStyle = '#b29b70'; ctx.fillRect(x + 8, y + 11, 10, 14); ctx.fillRect(x + 8, y + 30, 10, 14)
+      ctx.fillStyle = '#c3bc92'; for (let j = 0; j < 3; j++) { ctx.fillRect(x - 17, y + 55 + j * 18, 3, 4); ctx.fillRect(x + 11, y + 55 + j * 18, 3, 4) }
+    } else if (node.id === 'reef') {
+      for (const [rx, ry, radius, seed] of [[145, -70, 22, .2], [178, -25, 15, .8], [137, 45, 27, 1.5], [185, 82, 11, 2.1], [333, -45, 24, 1.1], [304, 12, 15, .4], [349, 67, 21, 2.5]]) terrainRock(ctx, rx, y + ry, radius, seed, g.time)
+    } else {
+      terrainIsland(ctx, 123, y - 47, 52, 80, 3, g.time)
+      terrainIsland(ctx, 354, y - 40, 54, 75, 8, g.time)
+      // Two quays face the clear central approach; the back wall is beyond the bow at arrival.
+      ctx.fillStyle = '#273c42'; ctx.fillRect(133, y - 108, 218, 25)
+      ctx.fillStyle = '#7e8a84'; ctx.fillRect(130, y - 113, 220, 20)
+      for (const px of [164, 294]) {
+        ctx.fillStyle = '#2a4147'; ctx.fillRect(px + 4, y - 96, 26, 172)
+        ctx.fillStyle = '#8c9690'; ctx.fillRect(px, y - 98, 23, 170)
+        ctx.fillStyle = '#bec5b1'; ctx.fillRect(px + (px < 240 ? 20 : 0), y - 98, 3, 170)
+        for (let j = 0; j < 7; j++) { ctx.fillStyle = '#b9a167'; ctx.fillRect(px + 8, y - 86 + j * 24, 6, 4) }
+      }
+      terrainBuilding(ctx, 104, y - 67, 37, 27, '#9b8c73'); terrainBuilding(ctx, 332, y - 76, 38, 25, '#6e8885')
+      ctx.strokeStyle = '#c3b076'; ctx.lineWidth = 3
+      for (const px of [145, 333]) { ctx.beginPath(); ctx.moveTo(px, y - 28); ctx.lineTo(px, y + 14); ctx.lineTo(px + (px < 240 ? 24 : -24), y + 14); ctx.stroke() }
+      ctx.fillStyle = '#d9d3aa'; ctx.fillRect(184, y + 67, 4, 5); ctx.fillRect(293, y + 67, 4, 5)
+    }
+    terrainTaskLabel(ctx, node, index)
+  }
+  ctx.restore()
+}
+
+/** Canvas artwork shared by the escort scene. Rendering never changes the simulation. */
+function escortArtPolygon(ctx, points, fill, stroke, width = .7) {
+  ctx.beginPath()
+  points.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))
+  ctx.closePath(); ctx.fillStyle = fill; ctx.fill()
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = width; ctx.stroke() }
+}
+
+function escortArtGradient(ctx, x0, y0, x1, y1, stops) {
+  const gradient = ctx.createLinearGradient(x0, y0, x1, y1)
+  for (const [offset, color] of stops) gradient.addColorStop(offset, color)
+  return gradient
+}
+
+let escortWaterTexture
+function escortArtWaterTexture() {
+  if (escortWaterTexture !== undefined) return escortWaterTexture
+  // This optional visual cache contains no session data; rule tests need no DOM/canvas polyfill.
+  if (typeof OffscreenCanvas === 'undefined') return null
+  const tile = new OffscreenCanvas(192, 192), surface = tile.getContext('2d')
+  if (!surface) return null
+  const pixels = surface.createImageData(192, 192)
+  for (let y = 0; y < 192; y++) for (let x = 0; x < 192; x++) {
+    const u = x / 192 * Math.PI * 2, v = y / 192 * Math.PI * 2
+    // Integer-frequency interference is seamless at both tile edges; fine grain is fixed.
+    const current = Math.sin(u * 3 + Math.sin(v * 2)) * .3 + Math.sin(v * 7 + Math.sin(u * 2)) * .22
+      + Math.sin(u * 11 + v * 9) * .11 + Math.cos(u * 19 - v * 13) * .07
+    const grain = (((x * 73 + y * 151) ^ (x * y * 17)) & 31) / 31 - .5
+    const value = Math.round(121 + current * 75 + grain * 16), offset = (y * 192 + x) * 4
+    pixels.data[offset] = value; pixels.data[offset + 1] = value + 7; pixels.data[offset + 2] = value + 9; pixels.data[offset + 3] = 255
+  }
+  surface.putImageData(pixels, 0, 0); escortWaterTexture = tile
+  return tile
+}
+
+function drawEscortOcean(ctx, g, p = {}) {
+  ctx.save()
+  const time = g.time || 0, scroll = time * 24
+  ctx.fillStyle = escortArtGradient(ctx, 0, 0, 480, 720, [
+    [0, '#183c48'], [.32, '#123744'], [.68, '#102e3d'], [1, '#0b2434'],
+  ])
+  ctx.fillRect(0, 0, 480, 720)
+  const texture = escortArtWaterTexture()
+  if (texture) {
+    ctx.save(); ctx.globalAlpha *= .20; ctx.globalCompositeOperation = 'soft-light'
+    const textureY = scroll * .72 % 288
+    for (let row = -1; row < 3; row++) for (let column = 0; column < 2; column++) ctx.drawImage(texture, column * 288, row * 288 + textureY, 288, 288)
+    ctx.restore()
+  }
+  // Broad light falloff creates depth without drawing bands across the ocean.
+  ctx.fillStyle = escortArtGradient(ctx, 0, 0, 480, 0, [
+    [0, 'rgba(3,16,28,.22)'], [.33, 'rgba(100,167,174,.045)'], [.7, 'rgba(80,151,166,.025)'], [1, 'rgba(3,16,28,.18)'],
+  ])
+  ctx.fillRect(0, 0, 480, 720)
+  ctx.lineCap = 'round'
+  // Each swell has a different length, curvature, speed and opacity; the field is periodic only far offscreen.
+  for (let i = 0; i < 150; i++) {
+    const x = (i * 127.31 + Math.sin(i * 4.63) * 77 + 480) % 480
+    const y = ((i * 83.17 + scroll * (.88 + i % 7 * .037)) % 820) - 50
+    const phase = Math.sin(time * .65 + i * 2.7), length = 5 + (i * 13 % 35)
+    const alpha = .025 + (i % 6) * .007 + Math.max(0, phase) * .018
+    ctx.strokeStyle = `rgba(155,204,205,${alpha})`; ctx.lineWidth = i % 5 === 0 ? 1 : .65
+    ctx.beginPath(); ctx.moveTo(x - length / 2, y)
+    ctx.bezierCurveTo(x - length / 4, y - 2, x + length / 4, y + 1 + phase, x + length / 2, y - .5)
+    ctx.stroke()
+    if (i % 3 === 0) {
+      ctx.strokeStyle = 'rgba(2,21,35,.11)'; ctx.lineWidth = 1.3
+      ctx.beginPath(); ctx.moveTo(x - length / 3, y + 3); ctx.quadraticCurveTo(x, y + 5, x + length / 3, y + 3); ctx.stroke()
+    }
+  }
+  // Small glints are deliberately restrained so moving bullets remain the brightest objects.
+  for (let i = 0; i < 54; i++) {
+    const x = (i * 193.17) % 480, y = ((i * 107.9 + scroll * 1.07) % 780) - 30
+    const shimmer = .025 + Math.max(0, Math.sin(time * .8 + i * 3.7)) * .035
+    ctx.fillStyle = `rgba(210,226,207,${shimmer})`; ctx.fillRect(x, y, i % 4 === 0 ? 4 : 1.5, .65)
+  }
+  ctx.restore()
+}
+
+function drawEscortJet(ctx, g, x, y, scale, angle, hostile = false, hit = false, boss = false) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(angle); ctx.scale(scale, scale)
+  const time = g.time || 0
+  const flash = hit ? '#f1f5ec' : null
+  const wing = flash || (hostile ? '#6d777c' : '#426d82')
+  const wingEdge = flash || (hostile ? '#9c9e99' : '#89adba')
+  const body = escortArtGradient(ctx, -7, 0, 7, 0, [
+    [0, flash || '#526d79'], [.4, flash || '#d0dcda'], [.64, flash || '#a8bbc0'], [1, flash || '#5b7885'],
+  ])
+  const accent = hostile ? '#c47a60' : '#9bd6df'
+  const silhouette = boss
+    ? [[0, -23], [7, -14], [11, -4], [29, 12], [27, 19], [14, 15], [9, 23], [-9, 23], [-14, 15], [-27, 19], [-29, 12], [-11, -4], [-7, -14]]
+    : [[0, -29], [5, -16], [6, -7], [23, 10], [21, 16], [7, 10], [6, 21], [12, 25], [10, 28], [0, 23], [-10, 28], [-12, 25], [-6, 21], [-7, 10], [-21, 16], [-23, 10], [-6, -7], [-5, -16]]
+  // Aircraft shadows are offset down-sun and sit below the metal body.
+  ctx.save(); ctx.translate(hostile ? -4 : 5, hostile ? -8 : 9)
+  escortArtPolygon(ctx, silhouette, 'rgba(2,12,20,.22)'); ctx.restore()
+  const flame = 5 + Math.sin(time * 39 + x * .7) * 1.7
+  for (const engineX of boss ? [-9, 9] : [0]) {
+    ctx.fillStyle = hostile ? 'rgba(226,160,107,.13)' : 'rgba(143,211,230,.12)'
+    ctx.beginPath(); ctx.ellipse(engineX, 25, boss ? 5 : 4, flame + 6, 0, 0, Math.PI * 2); ctx.fill()
+    escortArtPolygon(ctx, [[engineX - 2, 20], [engineX, 24 + flame], [engineX + 2, 20]], hostile ? '#e6bc91' : '#caeaf0')
+  }
+  escortArtPolygon(ctx, silhouette, wing, wingEdge, .75)
+  if (boss) {
+    // Twin nacelles and a swept flying-wing plan distinguish the flagship from a scaled fighter.
+    for (const side of [-1, 1]) {
+      escortArtPolygon(ctx, [[side * 6, -8], [side * 12, -5], [side * 14, 18], [side * 7, 22]], flash || '#485d69', wingEdge, .5)
+      ctx.fillStyle = flash || '#b4c1bd'; ctx.fillRect(side < 0 ? -11 : 8, -3, 3, 18)
+      escortArtPolygon(ctx, [[side * 12, 0], [side * 26, 12], [side * 23, 13], [side * 12, 5]], flash || '#84928f')
+      ctx.fillStyle = '#243d4a'; ctx.fillRect(side < 0 ? -12 : 7, 17, 5, 4)
+    }
+    escortArtPolygon(ctx, [[0, -23], [5, -13], [5, 10], [0, 16], [-5, 10], [-5, -13]], body)
+  } else {
+    for (const side of [-1, 1]) {
+      escortArtPolygon(ctx, [[side * 6, -6], [side * 20, 10], [side * 9, 8], [side * 6, 2]], flash || (hostile ? '#93968f' : '#7198a8'))
+      ctx.strokeStyle = hostile ? '#4f5e65' : '#254e65'; ctx.lineWidth = .65
+      ctx.beginPath(); ctx.moveTo(side * 8, 5); ctx.lineTo(side * 18, 13); ctx.moveTo(side * 7, 18); ctx.lineTo(side * 10, 25); ctx.stroke()
+      // Wing hardpoints and small navigation lamps provide recognizable scale.
+      ctx.fillStyle = '#b5c5c7'; ctx.fillRect(side < 0 ? -16 : 14, 7, 2, 7)
+      ctx.fillStyle = accent; ctx.fillRect(side < 0 ? -22 : 20, 11, 2, 2)
+    }
+    ctx.fillStyle = body; ctx.beginPath(); ctx.moveTo(0, -29)
+    ctx.bezierCurveTo(3, -25, 6, -14, 5, -3); ctx.lineTo(4, 18); ctx.lineTo(2.5, 22); ctx.lineTo(-2.5, 22); ctx.lineTo(-4, 18); ctx.lineTo(-5, -3)
+    ctx.bezierCurveTo(-6, -14, -3, -25, 0, -29); ctx.closePath(); ctx.fill()
+    ctx.strokeStyle = '#dbe7df'; ctx.lineWidth = .55; ctx.beginPath(); ctx.moveTo(-.7, -26); ctx.lineTo(-1.5, 18); ctx.stroke()
+    ctx.fillStyle = '#304b5b'; ctx.fillRect(-3, 17, 6, 5)
+  }
+  const glass = escortArtGradient(ctx, -3, -14, 3, -3, [[0, '#d5e9df'], [.28, '#7fa7b5'], [.55, '#214e68'], [1, '#132e41']])
+  ctx.fillStyle = flash || glass; ctx.beginPath(); ctx.moveTo(0, -18); ctx.bezierCurveTo(4, -14, 4, -8, 0, -5); ctx.bezierCurveTo(-4, -8, -4, -14, 0, -18); ctx.fill()
+  ctx.strokeStyle = '#acc2c4'; ctx.lineWidth = .55; ctx.beginPath(); ctx.moveTo(-1, -15); ctx.lineTo(-1.5, -10); ctx.stroke()
+  ctx.fillStyle = accent; ctx.fillRect(-1, 1, 2, 5)
+  // A small wing insignia gives each side an identity without covering the silhouette.
+  ctx.strokeStyle = hostile ? '#d88b70' : '#d4e7df'; ctx.lineWidth = .75
+  ctx.beginPath(); ctx.arc(boss ? 18 : 12, boss ? 11 : 9, boss ? 2.1 : 1.5, 0, Math.PI * 2); ctx.stroke()
+  ctx.restore()
+}
+
+function drawEscortConvoy(ctx, g) {
+  const c = g.convoy, time = g.time || 0
+  ctx.save(); ctx.translate(c.x, c.y)
+  // A soft propeller wash and small broken bow waves replace repeated outline chevrons.
+  ctx.fillStyle = escortArtGradient(ctx, 0, 26, 0, 139, [[0, 'rgba(182,220,213,.18)'], [.35, 'rgba(146,195,196,.10)'], [1, 'rgba(146,195,196,0)']])
+  ctx.beginPath(); ctx.moveTo(-7, 27); ctx.lineTo(-27, 139); ctx.quadraticCurveTo(0, 151, 27, 139); ctx.lineTo(7, 27); ctx.closePath(); ctx.fill()
+  for (let i = 0; i < 24; i++) {
+    const age = (i * .119 + time * .5) % 2.8, side = i % 2 ? 1 : -1
+    const spread = 7 + age * 11, py = 32 + age * 32
+    ctx.strokeStyle = `rgba(206,229,219,${(1 - age / 2.8) * .25})`; ctx.lineWidth = .65 + i % 3 * .25
+    ctx.beginPath(); ctx.moveTo(side * spread, py); ctx.quadraticCurveTo(side * (spread + 4), py + 4, side * (spread + 8), py + 3); ctx.stroke()
+    if (i % 3 === 0) { ctx.fillStyle = `rgba(214,235,225,${(1 - age / 2.8) * .2})`; ctx.fillRect(side * (spread - 4), py + 1, 1.5, 2) }
+  }
+  ctx.fillStyle = 'rgba(1,13,22,.26)'; ctx.beginPath(); ctx.ellipse(7, 8, 24, 44, -.05, 0, Math.PI * 2); ctx.fill()
+  const hull = escortArtGradient(ctx, -21, 0, 21, 0, [[0, '#38535d'], [.16, '#708c94'], [.4, '#becbc6'], [.72, '#92a9ac'], [1, '#4c6873']])
+  ctx.fillStyle = hull; ctx.strokeStyle = '#becfc8'; ctx.lineWidth = .8
+  ctx.beginPath(); ctx.moveTo(0, -44); ctx.bezierCurveTo(14, -34, 21, -17, 20, 7); ctx.lineTo(18, 34); ctx.quadraticCurveTo(0, 38, -18, 34); ctx.lineTo(-20, 7); ctx.bezierCurveTo(-21, -17, -14, -34, 0, -44); ctx.closePath(); ctx.fill(); ctx.stroke()
+  // Hull stripe, narrow gangways, deck framing and cargo lashings.
+  ctx.strokeStyle = '#254c5d'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(-17, -9); ctx.lineTo(-16, 30); ctx.moveTo(17, -9); ctx.lineTo(16, 30); ctx.stroke()
+  ctx.fillStyle = '#536d72'; ctx.fillRect(-14, -14, 28, 44)
+  ctx.strokeStyle = '#b8c6bc'; ctx.lineWidth = .7; ctx.strokeRect(-14, -14, 28, 44)
+  const cargoColors = ['#ae956c', '#6e9294', '#947e61', '#7c9a91', '#b2a277', '#628791']
+  for (let row = 0; row < 3; row++) for (let col = 0; col < 2; col++) {
+    const x = -12 + col * 13, y = -10 + row * 12
+    ctx.fillStyle = 'rgba(7,24,29,.45)'; ctx.fillRect(x + 1, y + 1, 11, 10)
+    ctx.fillStyle = col < g.cargo.length ? cargoColors[row * 2 + col] : '#4b646c'; ctx.fillRect(x, y, 11, 10)
+    ctx.fillStyle = 'rgba(223,230,208,.25)'; ctx.fillRect(x, y, 11, 1)
+    ctx.strokeStyle = 'rgba(30,52,53,.42)'; ctx.lineWidth = .5
+    for (let j = 1; j < 4; j++) { ctx.beginPath(); ctx.moveTo(x + j * 2.7, y + 2); ctx.lineTo(x + j * 2.7, y + 8); ctx.stroke() }
+  }
+  // Forward bridge with glazing, roof equipment, mast and anchor deck.
+  ctx.fillStyle = '#2e464f'; ctx.fillRect(-11, -26, 23, 12)
+  ctx.fillStyle = '#d0d8cb'; ctx.fillRect(-11, -28, 22, 11)
+  ctx.fillStyle = '#264f68'; ctx.fillRect(-9, -27, 18, 3)
+  ctx.fillStyle = '#8eafb3'; for (let i = 0; i < 5; i++) ctx.fillRect(-8 + i * 3.5, -27, 2.4, 1)
+  ctx.fillStyle = '#adbbb4'; ctx.fillRect(-6, -23, 12, 5)
+  ctx.fillStyle = '#e1e5d3'; ctx.fillRect(-4, -22, 3, 2); ctx.fillRect(2, -22, 3, 2)
+  ctx.strokeStyle = '#d4decd'; ctx.lineWidth = .9; ctx.beginPath(); ctx.moveTo(0, -38); ctx.lineTo(0, -27); ctx.moveTo(-5, -33); ctx.lineTo(5, -33); ctx.stroke()
+  ctx.fillStyle = '#3f5962'; ctx.beginPath(); ctx.arc(0, -35, 2, 0, Math.PI * 2); ctx.fill()
+  ctx.fillStyle = '#caaf76'; ctx.fillRect(-13, 31, 3, 2); ctx.fillRect(10, 31, 3, 2)
+  ctx.strokeStyle = 'rgba(225,240,226,.5)'; ctx.lineWidth = .8
+  ctx.beginPath(); ctx.moveTo(-2, -45); ctx.quadraticCurveTo(-17, -33, -22, -14); ctx.moveTo(2, -45); ctx.quadraticCurveTo(17, -33, 22, -14); ctx.stroke()
+  ctx.fillStyle = '#0d2430'; ctx.fillRect(-27, -56, 54, 4)
+  ctx.fillStyle = c.hp > 30 ? '#a2c8b5' : '#df9276'; ctx.fillRect(-27, -56, 54 * Math.max(0, c.hp) / 100, 3)
+  if (g.shield) {
+    ctx.strokeStyle = 'rgba(144,213,216,.65)'; ctx.lineWidth = 1
+    ctx.beginPath(); ctx.ellipse(0, -1, 32, 54, 0, 0, Math.PI * 2); ctx.stroke()
+    ctx.strokeStyle = 'rgba(167,227,222,.18)'; ctx.lineWidth = 3
+    ctx.beginPath(); ctx.ellipse(0, -1, 34, 56, 0, 0, Math.PI * 2); ctx.stroke()
+  }
+  ctx.restore()
+}
+
+
+const ESCORT_TOOL_CALLS = [
+  { start: .6, end: 2, name: 'web_search', text: '检索交互参考 · 完成后投放火力补给' },
+  { start: 4.2, end: 6, name: 'read_file', text: '读取项目资料 · 完成后投放护盾补给' },
+  { start: 8.2, end: 10, name: 'write_file', text: '写入网页文件 · 完成后获得工程修复' },
+  { start: 19, end: 21, name: 'apply_patch', text: '修改计时逻辑 · 完成后投放火力补给' },
+  { start: 40, end: 42, name: 'shell_exec', text: '执行构建检查 · 完成后获得空袭支援' },
+]
+
+function escortTaskView(g) {
+  const stage = escortRouteStage(g)
+  if (g.mode === 'live') {
+    const live = g.live || {}, todos = Array.isArray(live.todos) ? live.todos : []
+    return {
+      title: live.title || live.request || '当前会话', stage,
+      todo: todos[stage]?.content || (live.running ? '等待任务规划 · 正在护航' : '等待当前会话继续'),
+      total: todos.length, completed: todos.filter(todo => todo.status === 'completed').length,
+      status: todos[stage]?.status,
+      call: live.call || null,
+      event: [...g.log].reverse().find(row => ['工具', '子 Agent', 'Todo', '交付物', '会话'].includes(row.source)),
+      agents: (live.agents || []).filter(agent => agent.status === 'completed').slice(0, 2).map(agent => ({ ...agent, joined: true })),
+      cargo: (live.cargo || []).slice(0, 24),
+    }
+  }
+  const call = ESCORT_TOOL_CALLS.find(c => g.time >= c.start && g.time < c.end)
+  const event = [...g.log].reverse().find(row => ['工具', '子 Agent', 'Todo', '交付物'].includes(row.source))
+  return {
+    title: '番茄钟小站', stage, todo: ESCORT_ROUTE_NODES[stage].task, total: 4,
+    completed: g.todos.filter(status => status === '已完成').length,
+    status: g.todos[stage],
+    call: call ? { ...call, name: call.name === 'shell_exec' && g.decision === 'reject' ? '替代检查' : call.name } : null,
+    event,
+    agents: [{ name: '界面 Agent', joined: g.wings >= 1 }, { name: '逻辑 Agent', joined: g.wings >= 2 }],
+    cargo: g.cargo.slice(0, 2),
+  }
+}
+
+const taskText = (value, limit) => {
+  const text = Array.from(String(value || '').replace(/\s+/g, ' ').trim())
+  return text.length > limit ? text.slice(0, limit - 1).join('') + '…' : text.join('')
+}
+
+function taskPlate(ctx, x, y, w, h, accent = '#8fc5d1') {
+  ctx.fillStyle = 'rgba(6, 20, 31, .91)'; ctx.fillRect(x, y, w, h)
+  ctx.strokeStyle = 'rgba(153, 192, 198, .23)'; ctx.lineWidth = .8; ctx.strokeRect(x + .5, y + .5, w - 1, h - 1)
+  ctx.fillStyle = accent; ctx.fillRect(x, y, 2, h)
+}
+
+function drawEscortSupply(ctx, g, d) {
+  const salvage = d.type === 'salvage'
+  if (salvage) {
+    ctx.save(); ctx.translate(d.x, d.y); ctx.rotate(g.time * .45)
+    ctx.fillStyle = '#99c8c9'; ctx.strokeStyle = '#d8e6d8'; ctx.lineWidth = .8
+    ctx.fillRect(-4, -4, 8, 8); ctx.strokeRect(-4, -4, 8, 8)
+    ctx.fillStyle = '#578289'; ctx.fillRect(-2, -2, 4, 4); ctx.restore(); return
+  }
+  ctx.save(); ctx.translate(d.x, d.y)
+  const age = Number.isFinite(d.born) ? g.time - d.born : 3
+  if (age < 3) {
+    const sway = Math.sin(g.time * 2) * 3
+    ctx.fillStyle = '#c3c6b1'; ctx.beginPath(); ctx.arc(sway, -29, 22, Math.PI, Math.PI * 2); ctx.quadraticCurveTo(sway + 10, -33, sway, -29); ctx.quadraticCurveTo(sway - 10, -33, sway - 22, -29); ctx.fill()
+    ctx.strokeStyle = '#8caaa6'; ctx.lineWidth = .8
+    for (const dx of [-20, 0, 20]) { ctx.beginPath(); ctx.moveTo(sway + dx, -29); ctx.lineTo(dx * .35, -10); ctx.stroke() }
+  }
+  ctx.fillStyle = 'rgba(0, 8, 16, .32)'; ctx.beginPath(); ctx.ellipse(4, 15, 18, 7, 0, 0, Math.PI * 2); ctx.fill()
+  const crate = ctx.createLinearGradient(-13, -13, 13, 13); crate.addColorStop(0, '#b7a581'); crate.addColorStop(1, '#5d665a')
+  ctx.fillStyle = crate; ctx.fillRect(-12, -10, 24, 22)
+  ctx.strokeStyle = '#c7c7a8'; ctx.lineWidth = 1; ctx.strokeRect(-12, -10, 24, 22)
+  ctx.fillStyle = '#344e53'; ctx.fillRect(-3, -10, 6, 22)
+  ctx.fillStyle = '#e5dcaf'; ctx.font = 'bold 14px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(d.type === 'boost' ? 'Ⅱ' : '+', 0, 7)
+  ctx.restore()
+  const x = Math.max(10, Math.min(326, d.x - 72)), y = Math.min(608, d.y + 22)
+  taskPlate(ctx, x, y, 144, d.source ? 39 : 24, '#c6b47f')
+  ctx.textAlign = 'left'; ctx.font = 'bold 12px ui-monospace, monospace'; ctx.fillStyle = '#e1ddc7'
+  ctx.fillText(taskText(d.source || '战利品补给', 18), x + 9, y + 15)
+  if (d.source) { ctx.font = '11px sans-serif'; ctx.fillStyle = '#b5c9c9'; ctx.fillText(d.type === 'boost' ? '已返回 → 三发火力' : '已返回 → 船体护盾', x + 9, y + 30) }
+}
+
+function drawEscortTaskWorld(ctx, g) {
+  const view = escortTaskView(g), c = g.convoy, live = g.mode === 'live'
+  ctx.save()
+  // The manifest belongs to the actual freighter, not the surrounding UI.
+  const x = 282, y = Math.max(150, Math.min(561, c.y - 16))
+  ctx.strokeStyle = '#78969c'; ctx.lineWidth = .8; ctx.beginPath(); ctx.moveTo(c.x + 23, c.y); ctx.lineTo(x, y + 13); ctx.stroke()
+  const manifest = view.cargo.slice(0, 2)
+  const h = manifest.length ? 44 + manifest.length * 15 : 44
+  taskPlate(ctx, x, y, 181, h, '#9dbca6')
+  ctx.textAlign = 'left'; ctx.font = 'bold 12px sans-serif'; ctx.fillStyle = '#d7e2d7'; ctx.fillText('交付物运输船', x + 10, y + 16)
+  ctx.font = '11px sans-serif'; ctx.fillStyle = '#9fb7ba'; ctx.fillText(view.cargo.length ? `${view.cargo.length}${live ? '' : '/2'} 件已装船 · 护送入港` : live ? '等待会话提交交付文件' : '等待装船 · 网页与使用说明', x + 10, y + 32)
+  ctx.font = '10px ui-monospace, monospace'; ctx.fillStyle = '#d0d6b7'
+  manifest.forEach((name, i) => ctx.fillText(`✓ ${taskText(name, 23)}`, x + 10, y + 48 + i * 15))
+  const leftLabel = Math.max(8, Math.min(266, g.player.x - 154))
+  for (let i = 0; i < Math.min(g.wings, view.agents.length); i++) {
+    const wingX = g.player.x + (i ? 38 : -38), wingY = g.player.y + 28
+    const labelX = i ? Math.max(leftLabel + 110, Math.min(370, wingX + 16)) : leftLabel
+    const labelY = Math.max(115, Math.min(625, wingY - 18))
+    ctx.strokeStyle = '#829b9b'; ctx.beginPath(); ctx.moveTo(wingX, wingY); ctx.lineTo(labelX + (i ? 0 : 102), labelY + 13); ctx.stroke()
+    taskPlate(ctx, labelX, labelY, 102, 30, i ? '#aeb69b' : '#88b9c8')
+    ctx.font = 'bold 12px sans-serif'; ctx.fillStyle = '#d7e3df'; ctx.fillText(taskText(view.agents[i].name, 11), labelX + 8, labelY + 13)
+    ctx.font = '9px sans-serif'; ctx.fillStyle = '#91b4ba'; ctx.fillText('子任务完成 · 协同射击', labelX + 8, labelY + 25)
+  }
+  ctx.restore()
+}
+
+function drawEscortTaskHUD(ctx, g) {
+  const view = escortTaskView(g), live = g.mode === 'live'
+  ctx.save()
+  const shade = ctx.createLinearGradient(0, 0, 0, 100); shade.addColorStop(0, '#0c1c29'); shade.addColorStop(1, 'rgba(9, 27, 39, .94)')
+  ctx.fillStyle = shade; ctx.fillRect(0, 0, 480, 100)
+  ctx.textAlign = 'left'; ctx.font = '10px sans-serif'; ctx.fillStyle = '#8caab8'; ctx.fillText(live ? `当前任务  /  ${taskText(view.title, 27)}` : '联动演练  /  构建番茄钟小站', 16, 18)
+  ctx.font = 'bold 17px sans-serif'; ctx.fillStyle = '#e2e7de'; ctx.fillText(taskText(`${view.total ? `${view.stage + 1}. ` : ''}${view.todo}`, 21), 16, 42)
+  ctx.textAlign = 'right'; ctx.fillStyle = '#a4c6c7'; ctx.font = '11px sans-serif'; ctx.fillText(view.total ? `${view.completed}/${view.total} Todo 完成` : '暂无 Todo', 464, 18)
+  ctx.font = 'bold 18px ui-monospace, monospace'; ctx.fillStyle = '#decba0'; ctx.fillText(String(g.score).padStart(6, '0'), 464, 43)
+  if (view.total) for (let i = 0; i < view.total; i++) {
+    const done = live ? g.live.todos[i].status === 'completed' : g.todos[i] === '已完成'
+    const width = 448 / view.total
+    ctx.fillStyle = done ? '#8eae97' : i === view.stage ? '#7caebb' : '#284451'; ctx.fillRect(16 + i * width, 53, Math.max(1, width - Math.min(8, width * .1)), 3)
+  }
+  ctx.textAlign = 'left'; ctx.font = '11px sans-serif'; ctx.fillStyle = '#b5c8ce'
+  ctx.fillText(`战机 ${g.player.hp}/5`, 16, 78); ctx.fillText(`运输船 ${Math.ceil(g.convoy.hp)}%`, 100, 78); ctx.fillText(`火力 Lv.${g.level}`, 226, 78)
+  ctx.textAlign = 'right'; ctx.fillStyle = '#d4c094'; ctx.fillText(g.combo > 1 ? `${g.combo} 连击 ×${Math.min(4, 1 + Math.floor(g.combo / 5))}` : `击落 ${g.kills}`, 464, 78)
+  ctx.fillStyle = '#263f4b'; ctx.fillRect(16, 86, 72, 3); ctx.fillStyle = '#a6bfad'; ctx.fillRect(16, 86, 72 * g.player.hp / 5, 3)
+  ctx.fillStyle = '#263f4b'; ctx.fillRect(100, 86, 104, 3); ctx.fillStyle = g.convoy.hp > 30 ? '#84b8ba' : '#d48a76'; ctx.fillRect(100, 86, 104 * g.convoy.hp / 100, 3)
+  const boss = g.enemies.find(e => e.boss)
+  if (boss) {
+    taskPlate(ctx, 105, 108, 270, 29, '#c98773'); ctx.textAlign = 'center'; ctx.font = '11px sans-serif'; ctx.fillStyle = '#d9a08a'; ctx.fillText('重装旗舰拦截 · 红线锁定后冲刺', 240, 122)
+    ctx.fillStyle = '#463e40'; ctx.fillRect(116, 129, 248, 3); ctx.fillStyle = '#c98773'; ctx.fillRect(116, 129, 248 * boss.hp / boss.maxHP, 3)
+  }
+  if (g.phase === 'playing') {
+    const event = view.event, call = view.call
+    const title = call ? `工具调用 · ${call.name}` : event ? `${event.source} · 任务广播` : live ? `当前会话 · ${view.title}` : '任务开始 · 护送番茄钟小站'
+    const detail = call ? call.text : event?.text || (live ? '等待当前会话的新事件，战场独立运行' : 'Todo 推进航程，工具投放补给，子 Agent 加入护航')
+    taskPlate(ctx, 12, 660, 456, 49, call ? '#bbab7f' : '#739eab')
+    ctx.textAlign = 'left'; ctx.font = 'bold 12px sans-serif'; ctx.fillStyle = '#d4dfd8'; ctx.fillText(taskText(title, 36), 23, 678)
+    ctx.font = '11px sans-serif'; ctx.fillStyle = '#9ebac1'; ctx.fillText(taskText(detail, 37), 23, 697)
+    if (call) { ctx.fillStyle = '#bcae84'; ctx.fillRect(442, 671, 3, 3); ctx.fillRect(449, 671, 3, 3) }
+  }
+  ctx.restore()
+}
+
+
+/** The fixed timeline belongs exclusively to the opt-in rehearsal. */
+function createEscortAction(mode = 'demo') {
+  return { version: 3, mode, time: 0, phase: 'ready', score: 0, kills: 0, player: { x: 240, y: 625, hp: 5, grace: 2 },
+    convoy: { x: 240, y: 560, hp: 100 }, enemies: [], bullets: [], shots: [], drops: [], bursts: [],
+    combo: 0, comboTTL: 0, bestCombo: 0, salvage: 0, level: 1, dash: 0, dashCooldown: 0, shake: 0, flash: 0, wave: 0, bossKills: 0, particles: [], floaters: [], cooldown: 0, spawn: .35, seen: [], todos: mode === 'live' ? [] : ['进行中', '待处理', '待处理', '待处理'],
+    agents: mode === 'live' ? [] : ['执行中', '执行中'], wings: 0, repair: 1, strike: 1, boost: 0, shield: 0, used: 0, cargo: [],
+    decision: null, log: [], notice: '方向键 / WASD 移动，靠近运输船护航；空格冲刺穿越弹幕；Q 修复，E 空袭。', noticeUntil: 6 }
+}
+function actionLog(g, source, text) {
+  g.log.push({ source, text, time: g.time }); g.log = g.log.slice(-20); g.notice = text; g.noticeUntil = g.time + 4
+}
+function actionTaskEvents(g) {
+  if (g.mode === 'live') return
+  const once = (id, time, fn) => { if (g.time >= time && !g.seen.includes(id)) { g.seen.push(id); fn() } }
+  once('search', 2, () => { g.drops.push({ x: 170, y: 420, type: 'boost', ttl: 14, source: 'web_search', born: g.time }); actionLog(g, '工具', 'web_search 返回 · 火力补给进入战场，移动拾取') })
+  once('read', 6, () => { g.drops.push({ x: 310, y: 475, type: 'shield', ttl: 14, source: 'read_file', born: g.time }); actionLog(g, '工具', 'read_file 返回 · 护盾补给投放') })
+  once('write', 10, () => { g.repair = Math.min(3, g.repair + 1); actionLog(g, '工具', 'write_file 返回 · 工程支援 +1，按 Q 修复运输船') })
+  once('ui', 15, () => { g.agents[0] = '已归航'; g.wings = 1; g.todos = ['已完成', '进行中', '待处理', '待处理']; actionLog(g, '子 Agent', '界面 Agent 归航 · 设计 Todo 完成，加入编队协同射击') })
+  once('patch', 21, () => { g.drops.push({ x: 200, y: 350, type: 'boost', ttl: 14, source: 'apply_patch', born: g.time }); actionLog(g, '工具', 'apply_patch 返回 · 新火力补给已投放') })
+  once('attention', 31, () => { g.phase = 'attention'; actionLog(g, '模拟交互', '任务需要用户查看 · 战场已冻结，不会损失生命或补给') })
+  once('logic', 36, () => { g.agents[1] = '已归航'; g.wings = 2; g.cargo = ['pomodoro.html']; g.todos = ['已完成', '已完成', '进行中', '待处理']; actionLog(g, '子 Agent', '逻辑 Agent 归航 · pomodoro.html 已装船，第二架僚机加入') })
+  once('command', 42, () => { g.strike = Math.min(3, g.strike + 1); actionLog(g, '工具', `${g.decision === 'reject' ? '替代检查' : 'shell_exec'} 返回 · 空袭支援 +1，按 E 清除敌机与敌弹`) })
+  once('check', 49, () => { g.cargo = ['pomodoro.html', '使用说明.md']; g.todos = ['已完成', '已完成', '已完成', '进行中']; actionLog(g, 'Todo', '检查 Todo 完成 · 使用说明.md 已装船，护送两件成果入港') })
+  once('delivery', 62, () => {
+    g.todos = ['已完成', '已完成', '已完成', '已完成']; g.phase = 'complete'
+    g.cargo = ['pomodoro.html', '使用说明.md']; g.shots = []; g.enemies = []
+    actionLog(g, '交付物', '模拟任务结束 · 两件成果货物已安全入港，战场暂停')
+  })
+}
+function actionSupport(g, kind) {
+  if (g.phase !== 'playing') return false
+  if (kind === 'dash' && g.dashCooldown <= 0) {
+    g.dash = .23; g.dashCooldown = 2.8; g.player.grace = Math.max(g.player.grace, .35); g.shake = 2; return true
+  }
+  if (kind === 'repair' && g.repair > 0) {
+    g.repair--; g.used++; g.convoy.hp = Math.min(100, g.convoy.hp + 28); g.shield = 4
+    actionLog(g, '支援', '工程修复 · 运输船恢复 28 耐久，护盾持续 4 秒'); return true
+  }
+  if (kind === 'strike' && g.strike > 0) {
+    g.strike--; g.used++; g.shots = []; g.flash = .35; g.shake = 12
+    for (const e of g.enemies) { e.hp -= e.boss ? 24 : 99; if (e.hp <= 0) actionKill(g, e); else e.hit = .15 }
+    g.enemies = g.enemies.filter(e => e.hp > 0); g.bursts.push({ x: g.convoy.x, y: g.convoy.y, life: .7, radius: 170 })
+    actionLog(g, '支援', '空袭支援 · 清除杂兵与敌弹，重创旗舰'); return true
+  }
+  return false
+}
+const actionDistance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y)
+function actionShot(from, target, speed, extra = {}) {
+  const dx = target.x - from.x, dy = target.y - from.y, length = Math.hypot(dx, dy) || 1
+  return { x: from.x, y: from.y, vx: dx / length * speed, vy: dy / length * speed, ttl: 2.5, ...extra }
+}
+function actionFloat(g, x, y, text, color = 'gold') {
+  g.floaters.push({ x, y, text, color, life: 1.1 })
+}
+function actionKill(g, e) {
+  g.combo++; g.bestCombo = Math.max(g.bestCombo, g.combo); g.comboTTL = 3
+  const points = (e.boss ? 600 : e.heavy ? 80 : 30) * Math.min(4, 1 + Math.floor(g.combo / 5))
+  g.score += points; g.kills++; g.shake = e.boss ? 10 : 3
+  if (e.boss) { g.bossKills++; g.strike = Math.min(3, g.strike + 1) }
+  g.bursts.push({ x: e.x, y: e.y, life: .65, radius: e.boss ? 95 : 28 })
+  actionFloat(g, e.x, e.y - 15, `+${points}`)
+  // Deterministic visual debris never consumes the gameplay random stream.
+  for (let i = 0; i < (e.boss ? 24 : 9); i++) {
+    const a = i * 2.4, speed = 35 + i % 5 * 22
+    g.particles.push({ x: e.x, y: e.y, vx: Math.cos(a) * speed, vy: Math.sin(a) * speed, life: .65, hot: true })
+  }
+  g.drops.push({ x: e.x, y: e.y, type: 'salvage', ttl: 11 })
+  if (e.boss) g.drops.push({ x: e.x + 25, y: e.y, type: 'boost', ttl: 15 })
+}
+function actionBoss(g, stage) {
+  const id = `flagship-${stage}`
+  if (g.seen.includes(id)) return
+  g.seen.push(id)
+  g.enemies.push({ x: 240, y: -45, hp: stage === 1 ? 48 : 72, maxHP: stage === 1 ? 48 : 72, boss: true, heavy: true, kind: 'flagship', fire: 2.6, speed: 24, age: 0, hit: 0 })
+  actionFloat(g, 240, 180, stage === 1 ? '重装旗舰入侵' : '最终拦截', 'gold')
+  actionLog(g, '敌情', stage === 1 ? '重装旗舰接近 · 红线锁定后冲刺躲避，击破可获得空袭补给' : '最终拦截 · 旗舰与编队来袭，保护成果运输船')
+}
+function stepEscortAction(g, input, seconds, random = Math.random) {
+  if (g.phase !== 'playing') return
+  const dt = Math.max(0, Math.min(.05, seconds)); g.time += dt
+  actionTaskEvents(g)
+  if (g.phase !== 'playing') return
+  g.player.grace = Math.max(0, g.player.grace - dt); g.boost = Math.max(0, g.boost - dt); g.shield = Math.max(0, g.shield - dt)
+  for (const key of ['dash', 'dashCooldown', 'flash', 'comboTTL']) g[key] = Math.max(0, g[key] - dt)
+  g.shake *= Math.exp(-18 * dt)
+  if (!g.comboTTL) g.combo = 0
+  if (g.time >= 18) actionBoss(g, 1)
+  if (g.time >= 49) actionBoss(g, 2)
+  const keys = input.keys || new Set()
+  const dx = Number(keys.has('ArrowRight') || keys.has('KeyD')) - Number(keys.has('ArrowLeft') || keys.has('KeyA'))
+  const dy = Number(keys.has('ArrowDown') || keys.has('KeyS')) - Number(keys.has('ArrowUp') || keys.has('KeyW'))
+  const norm = Math.hypot(dx, dy) || 1
+  g.player.x = Math.max(18, Math.min(462, g.player.x + dx / norm * 235 * (g.dash > 0 ? 3.2 : 1) * dt))
+  g.player.y = Math.max(110, Math.min(640, g.player.y + dy / norm * 235 * (g.dash > 0 ? 3.2 : 1) * dt))
+  if (input.pointer) { g.player.x = Math.max(18, Math.min(462, input.x)); g.player.y = Math.max(110, Math.min(640, input.y)) }
+  // Autonomous convoy movement follows the rehearsal's task route, not player score.
+  const stage = escortRouteStage(g)
+  const target = g.mode === 'live' ? { x: 240, y: 520 - (g.todos.length ? g.todos.filter(s => s === '已完成').length / g.todos.length * 190 : 0) } : [{ x: 240, y: 520 }, { x: 240, y: 460 }, { x: 240, y: 400 }, { x: 240, y: 330 }][stage]
+  const dist = actionDistance(g.convoy, target)
+  if (dist > 1) { g.convoy.x += (target.x - g.convoy.x) / dist * Math.min(dist, 65 * dt); g.convoy.y += (target.y - g.convoy.y) / dist * Math.min(dist, 65 * dt) }
+  g.spawn -= dt
+  if (g.spawn <= 0 && g.enemies.filter(e => !e.boss).length < 12) {
+    g.wave++
+    const kind = g.wave % 4 === 0 ? 'gunner' : g.wave % 3 === 0 ? 'raider' : 'scout'
+    const count = g.time < 8 ? 2 : 3, center = 90 + random() * 300
+    for (let i = 0; i < count; i++) {
+      const heavy = kind === 'gunner', hp = heavy ? 5 : 2
+      g.enemies.push({ x: Math.max(35, Math.min(445, center + (i - 1) * 65)), y: -25 - i * 23,
+        hp, maxHP: hp, heavy, kind, fire: 1.9 + i * .25, speed: kind === 'raider' ? 88 : heavy ? 34 : 52, age: 0, hit: 0 })
+    }
+    g.spawn = Math.max(2.2, 3.7 - g.time / 70)
+  }
+  g.cooldown -= dt
+  if (g.cooldown <= 0) {
+    const nearest = [...g.enemies].sort((a, b) => actionDistance(g.player, a) - actionDistance(g.player, b))[0]
+    const aim = nearest || { x: g.player.x, y: g.player.y - 100 }
+    g.bullets.push(actionShot(g.player, aim, 540, { damage: g.level >= 3 ? 2 : 1 }))
+    if (g.level >= 2 && !g.boost) g.bullets.push(actionShot({ x: g.player.x + 12, y: g.player.y }, aim, 540))
+    if (g.boost) for (const offset of [-12, 12]) g.bullets.push(actionShot({ x: g.player.x + offset, y: g.player.y }, aim, 420))
+    for (let i = 0; i < g.wings; i++) {
+      const from = { x: g.player.x + (i ? 34 : -34), y: g.player.y + 25 }
+      g.bullets.push(actionShot(from, aim, 380, { wing: true }))
+    }
+    g.cooldown = g.boost ? .12 : .20
+  }
+  for (const e of g.enemies) {
+    e.age = (e.age || 0) + dt; e.hit = Math.max(0, (e.hit || 0) - dt)
+    const d = actionDistance(e, g.convoy) || 1
+    if (e.boss) { e.y += (185 - e.y) * dt; e.x = 240 + Math.sin(e.age * .65) * 150 }
+    else {
+      e.x += (g.convoy.x - e.x) / d * e.speed * dt + Math.sin(e.age * 3) * (e.kind === 'raider' ? 55 : 12) * dt
+      e.y += (g.convoy.y - e.y) / d * e.speed * dt
+    }
+    e.fire -= dt
+    if ((e.boss || e.kind === 'gunner') && e.fire < .65 && !e.aim) e.aim = { x: g.player.x, y: g.player.y }
+    if (e.fire <= 0 && e.y > 110) {
+      const aim = e.aim || (e.kind === 'raider' ? g.player : g.convoy), speed = e.boss ? 185 : 125
+      const shot = actionShot(e, aim, speed)
+      const angles = e.boss ? [-.32, -.16, 0, .16, .32] : e.kind === 'gunner' ? [-.2, 0, .2] : [0]
+      for (const angle of angles) g.shots.push({ ...shot, vx: shot.vx * Math.cos(angle) - shot.vy * Math.sin(angle), vy: shot.vx * Math.sin(angle) + shot.vy * Math.cos(angle), ttl: 5 })
+      e.aim = null; e.fire = e.boss ? 2.1 : e.heavy ? 2.8 : 3.5
+    }
+    if (!e.boss && d < 29) { e.hp = 0; g.shake = 5; if (!g.shield) g.convoy.hp -= e.heavy ? 10 : 5 }
+  }
+  for (const b of g.bullets) {
+    b.x += b.vx * dt; b.y += b.vy * dt; b.ttl -= dt
+    const enemy = g.enemies.find(e => e.hp > 0 && actionDistance(b, e) < (e.boss ? 42 : e.heavy ? 20 : 15))
+    if (enemy) { b.ttl = 0; enemy.hp -= b.damage || 1; enemy.hit = .09; g.particles.push({ x: b.x, y: b.y, vx: -b.vx * .07, vy: -b.vy * .07, life: .16, hot: true }); if (enemy.hp <= 0) actionKill(g, enemy) }
+  }
+  for (const b of g.shots) {
+    b.x += b.vx * dt; b.y += b.vy * dt; b.ttl -= dt
+    if (actionDistance(b, g.player) < 14 && !g.player.grace) { b.ttl = 0; g.player.hp--; g.player.grace = 1.5; g.shake = 8; g.combo = 0; g.comboTTL = 0 }
+    else if (actionDistance(b, g.convoy) < 26) { b.ttl = 0; if (!g.shield) g.convoy.hp -= 4 }
+  }
+  for (const e of g.enemies) if (e.hp > 0 && actionDistance(e, g.player) < 24 && !g.player.grace) { g.player.hp--; g.player.grace = 1.5; g.shake = 8; g.combo = 0; g.comboTTL = 0; if (!e.boss) e.hp = 0 }
+  for (const d of g.drops) {
+    d.ttl -= dt
+    const distance = actionDistance(d, g.player)
+    if (distance < 105 && distance > 1) { d.x += (g.player.x - d.x) / distance * 180 * dt; d.y += (g.player.y - d.y) / distance * 180 * dt }
+    if (distance < 30) {
+      d.ttl = 0; g.score += 20
+      if (d.type === 'boost') g.boost = 10
+      else if (d.type === 'salvage') {
+        g.salvage++; const next = Math.min(3, 1 + Math.floor(g.salvage / 5))
+        if (next > g.level) { g.level = next; actionFloat(g, g.player.x, g.player.y - 35, `火力 Lv.${next}`); g.flash = .12 }
+        else actionFloat(g, d.x, d.y, '能量 +1', 'blue')
+      }
+      else { g.shield = 7; g.player.grace = 3 }
+      if (d.type !== 'salvage') actionLog(g, '拾取', d.type === 'boost' ? '火力强化 10 秒 · 三发齐射' : '运输船护盾 7 秒')
+    }
+  }
+  for (const b of g.bursts) b.life -= dt
+  for (const p of g.particles) { p.life -= dt; p.x += p.vx * dt; p.y += p.vy * dt }
+  for (const f of g.floaters) { f.life -= dt; f.y -= 26 * dt }
+  g.particles = g.particles.filter(p => p.life > 0).slice(-150); g.floaters = g.floaters.filter(f => f.life > 0).slice(-24)
+  g.enemies = g.enemies.filter(e => e.hp > 0); g.bullets = g.bullets.filter(b => b.ttl > 0).slice(-160)
+  g.shots = g.shots.filter(b => b.ttl > 0).slice(-100); g.drops = g.drops.filter(d => d.ttl > 0).slice(-40); g.bursts = g.bursts.filter(b => b.life > 0)
+  if (g.player.hp <= 0 || g.convoy.hp <= 0) { g.phase = 'over'; g.convoy.hp = Math.max(0, g.convoy.hp); actionLog(g, '战斗', '本次护航失利 · 可重新演练；游戏胜负不影响真实任务') }
+}
+function drawEscortAction(ctx, g, p) {
+  const cyan = '#a4d8dc', gold = '#d9bd86', red = '#e09a83', white = '#e5ece5'
+  ctx.save()
+  drawEscortOcean(ctx, g, p)
+  const scroll = g.time * 24
+  ctx.save(); ctx.beginPath(); ctx.rect(0, 100, 480, 560); ctx.clip()
+  const coast = (x, y, size, seed) => {
+    ctx.save(); ctx.translate(x, y)
+    const shore = scale => {
+      ctx.beginPath()
+      for (let i = 0; i <= 36; i++) {
+        const a = i / 36 * Math.PI * 2, r = size * (1 + .12 * Math.sin(a * 5 + seed) + .07 * Math.cos(a * 9 - seed))
+        const px = Math.cos(a) * r * scale, py = Math.sin(a) * r * 1.8 * scale
+        if (!i) ctx.moveTo(px, py); else ctx.lineTo(px, py)
+      }
+      ctx.closePath()
+    }
+    ctx.globalAlpha = .25; ctx.fillStyle = '#397986'; shore(1.23); ctx.fill()
+    ctx.globalAlpha = .35; ctx.strokeStyle = '#a0c7be'; ctx.lineWidth = 1; shore(1.13 + Math.sin(g.time * 1.3 + seed) * .015); ctx.stroke()
+    ctx.globalAlpha = 1; ctx.fillStyle = '#777c66'; shore(1.04); ctx.fill()
+    ctx.fillStyle = '#314e47'; shore(1); ctx.fill()
+    ctx.fillStyle = '#28443d'; shore(.88); ctx.fill()
+    for (let i = 0; i < 24; i++) {
+      const angle = i * 2.4, r = size * Math.sqrt(i / 25) * .8
+      const px = Math.cos(angle) * r, py = Math.sin(angle) * r * 1.8
+      ctx.fillStyle = i % 3 ? '#38584a' : '#536450'; ctx.beginPath(); ctx.ellipse(px, py, 6 + i % 5, 9 + i % 6, angle, 0, Math.PI * 2); ctx.fill()
+    }
+    ctx.restore()
+  }
+  coast(-55, (110 + scroll * .8) % 1150 - 220, 90, 2)
+  coast(548, (650 + scroll * .8) % 1150 - 220, 105, 7)
+  ctx.restore(); ctx.globalAlpha = 1
+  drawEscortTerrain(ctx, g)
+  ctx.save()
+  if (g.shake > .05 && !p.reducedMotion) ctx.translate(Math.sin(g.time * 93) * g.shake * .55, Math.cos(g.time * 81) * g.shake * .4)
+  const jet = (x, y, scale, angle, hostile = false, hit = false, boss = false) => drawEscortJet(ctx, g, x, y, scale, angle, hostile, hit, boss)
+  // Telegraphs precede aimed volleys; they do not follow the player after locking.
+  for (const e of g.enemies) if (e.aim && e.fire > 0) {
+    ctx.strokeStyle = red; ctx.globalAlpha = .25 + Math.sin(g.time * 22) * .12; ctx.lineWidth = e.boss ? 2 : 1; ctx.setLineDash([7, 6])
+    ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(e.aim.x, e.aim.y); ctx.stroke(); ctx.setLineDash([])
+    ctx.beginPath(); ctx.arc(e.aim.x, e.aim.y, 18, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1
+  }
+  for (const e of g.enemies) {
+    jet(e.x, e.y, e.boss ? 1.8 : e.heavy ? 1 : .78, Math.PI, true, e.hit > 0, e.boss)
+    if (e.tool && e.y > 115) { ctx.textAlign = 'center'; ctx.font = '10px ui-monospace, monospace'; ctx.fillStyle = '#ded8ba'; ctx.fillText(e.tool.slice(0, 20), e.x, e.y + 35) }
+    if (e.heavy && !e.boss) { ctx.fillStyle = '#293047'; ctx.fillRect(e.x - 17, e.y - 29, 34, 3); ctx.fillStyle = red; ctx.fillRect(e.x - 17, e.y - 29, 34 * e.hp / (e.maxHP || 5), 3) }
+  }
+  for (const b of g.bullets) {
+    ctx.strokeStyle = b.wing ? gold : cyan; ctx.lineWidth = b.wing ? 2 : 3; ctx.shadowColor = cyan; ctx.shadowBlur = 3
+    ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(b.x - b.vx * .022, b.y - b.vy * .022); ctx.stroke()
+  }
+  ctx.shadowBlur = 0
+  for (const b of g.shots) {
+    ctx.fillStyle = red; ctx.shadowColor = red; ctx.shadowBlur = 3; ctx.beginPath(); ctx.arc(b.x, b.y, 4.5, 0, Math.PI * 2); ctx.fill()
+    ctx.fillStyle = '#ffe7df'; ctx.beginPath(); ctx.arc(b.x, b.y, 2, 0, Math.PI * 2); ctx.fill()
+  }
+  ctx.shadowBlur = 0
+  for (const d of g.drops) drawEscortSupply(ctx, g, d)
+  drawEscortConvoy(ctx, g)
+  if (g.dash > 0) { ctx.globalAlpha = .22; jet(g.player.x, g.player.y + 30, .9, 0); jet(g.player.x, g.player.y + 55, .8, 0); ctx.globalAlpha = 1 }
+  jet(g.player.x, g.player.y, 1.05, 0)
+  if (g.player.grace > 0) { ctx.strokeStyle = cyan; ctx.globalAlpha = .3 + Math.sin(g.time * 15) * .15; ctx.beginPath(); ctx.arc(g.player.x, g.player.y, 28, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1 }
+  for (let i = 0; i < g.wings; i++) jet(g.player.x + (i ? 38 : -38), g.player.y + 28 + Math.sin(g.time * 3) * 3, .5, 0)
+  for (const b of g.bursts) { ctx.strokeStyle = gold; ctx.lineWidth = 2; ctx.globalAlpha = Math.min(1, b.life * 2); ctx.beginPath(); ctx.arc(b.x, b.y, (b.radius || 30) * (1 - b.life / .7), 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1 }
+  for (const part of g.particles) { ctx.globalAlpha = Math.min(1, part.life * 3); ctx.fillStyle = part.hot ? gold : cyan; ctx.fillRect(part.x, part.y, 3, 3) }
+  ctx.globalAlpha = 1
+  for (const f of g.floaters) { ctx.globalAlpha = Math.min(1, f.life * 2); ctx.fillStyle = f.color === 'blue' ? cyan : gold; ctx.font = 'bold 13px ui-monospace, monospace'; ctx.textAlign = 'center'; ctx.fillText(f.text, f.x, f.y) }
+  ctx.globalAlpha = 1; ctx.restore()
+  drawEscortTaskWorld(ctx, g)
+  drawEscortTaskHUD(ctx, g)
+  if (g.flash) { ctx.globalAlpha = Math.min(.35, g.flash); ctx.fillStyle = '#d4f5ff'; ctx.fillRect(0, 0, 480, 720); ctx.globalAlpha = 1 }
+  ctx.restore()
+}
+
+function restoreEscortAction(raw) {
+  try {
+    if (!raw || raw.length > 150000) return null
+    const g = JSON.parse(raw), finite = n => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) < 1e7
+    if (!g || ![2, 3].includes(g.version) || !['ready', 'playing', 'paused', 'attention', 'complete', 'over'].includes(g.phase)) return null
+    if (!['time', 'score', 'kills', 'wings', 'repair', 'strike', 'boost', 'shield', 'used', 'cooldown', 'spawn', 'noticeUntil'].every(key => finite(g[key]))) return null
+    if (g.mode !== undefined && !['live', 'demo'].includes(g.mode)) return null
+    g.mode ||= 'demo'
+    if (g.time < 0 || g.time > (g.mode === 'live' ? 86400 : 63) || !g.player || !g.convoy || !['x', 'y', 'hp', 'grace'].every(key => finite(g.player[key])) || !['x', 'y', 'hp'].every(key => finite(g.convoy[key]))) return null
+    if (!['enemies', 'bullets', 'shots', 'drops', 'bursts', 'seen', 'todos', 'agents', 'cargo', 'log'].every(key => Array.isArray(g[key]) && g[key].length <= 180)) return null
+    for (const key of ['enemies', 'bullets', 'shots', 'drops', 'bursts']) if (!g[key].every(row => row && finite(row.x) && finite(row.y))) return null
+    if (!g.enemies.every(e => ['hp', 'fire', 'speed'].every(key => finite(e[key]))) || ![...g.bullets, ...g.shots].every(b => ['vx', 'vy', 'ttl'].every(key => finite(b[key])))) return null
+    if (!g.drops.every(d => ['boost', 'shield', 'salvage'].includes(d.type) && finite(d.ttl) && (d.source === undefined || typeof d.source === 'string' && d.source.length <= 40) && (d.born === undefined || finite(d.born))) || !g.bursts.every(b => finite(b.life))) return null
+    if (!['seen', 'todos', 'agents', 'cargo'].every(key => g[key].every(row => typeof row === 'string' && row.length < 100)) || !g.log.every(row => row && typeof row.source === 'string' && typeof row.text === 'string') || typeof g.notice !== 'string') return null
+    if ((g.mode === 'demo' && (g.todos.length !== 4 || g.agents.length !== 2)) || g.wings < 0 || g.wings > 2 || g.repair < 0 || g.repair > 3 || g.strike < 0 || g.strike > 3) return null
+    if (g.mode === 'live') {
+      delete g.live
+      if (g.liveCursor && !['turn', 'seq', 'steps'].every(key => Number.isSafeInteger(g.liveCursor[key]) && g.liveCursor[key] >= -1)) return null
+      if (g.liveCursor?.calls !== undefined && (!Array.isArray(g.liveCursor.calls) || g.liveCursor.calls.length > 128 || !g.liveCursor.calls.every(id => typeof id === 'string' && id.length <= 160))) return null
+    }
+    if (!g.enemies.every(e => (e.tool === undefined || typeof e.tool === 'string' && e.tool.length <= 40) && (e.callId === undefined || typeof e.callId === 'string' && e.callId.length <= 180))) return null
+    const defaults = createEscortAction()
+    for (const field of ['combo', 'comboTTL', 'bestCombo', 'salvage', 'level', 'dash', 'dashCooldown', 'shake', 'flash', 'wave', 'bossKills']) {
+      if (g[field] === undefined) g[field] = defaults[field]
+      if (!finite(g[field]) || g[field] < 0) return null
+    }
+    for (const field of ['particles', 'floaters']) g[field] = []
+    if (g.level < 1 || g.level > 3 || g.dashCooldown > 3 || g.dash > 1) return null
+    for (const e of g.enemies) { if (e.aim && (!finite(e.aim.x) || !finite(e.aim.y))) return null; if (e.age !== undefined && !finite(e.age)) return null; if (e.boss && (!finite(e.maxHP) || e.maxHP <= 0)) return null }
+    // Earlier saves recorded completed rehearsal milestones before staged loading existed.
+    if (g.mode === 'demo' && g.seen.includes('check') && g.cargo.length < 2) g.cargo = ['pomodoro.html', '使用说明.md']
+    else if (g.mode === 'demo' && g.seen.includes('logic') && !g.cargo.length) g.cargo = ['pomodoro.html']
+    if (g.version === 2) {
+      // Retain the entire battle when moving from the old landscape field.
+      const remap = row => { row.x *= .6; row.y *= 1.5 }
+      remap(g.player); remap(g.convoy)
+      for (const field of ['enemies', 'bullets', 'shots', 'drops', 'bursts']) for (const row of g[field]) {
+        remap(row); if (row.aim) remap(row.aim)
+        if (row.vx !== undefined) { row.vx *= .6; row.vy *= 1.5 }
+      }
+      g.convoy.x = 240; g.convoy.y = [520, 460, 400, 330][Math.max(0, g.todos.findIndex(state => state === '进行中'))]; g.version = 3
+      if (g.phase === 'ready') { g.player.x = 240; g.player.y = 625; g.convoy.y = 560 }
+    }
+    g.player.x = Math.max(18, Math.min(462, g.player.x)); g.player.y = Math.max(110, Math.min(640, g.player.y))
+    if (g.phase === 'playing') g.phase = 'paused'
+    return g
+  } catch { return null }
+}
+
+const escortText = (value, max = 120) => typeof value === 'string' ? value.replace(/[\x00-\x1f\x7f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max) : ''
+const escortTodoStatus = { pending: '待处理', in_progress: '进行中', completed: '已完成' }
+
+/** Read only the current session's public projections; absent data stays absent. */
+function escortLiveView({ sessionId, title, detail, todos, catalog, summaries, statuses, status, observedAgents = [] }) {
+  const agents = (Array.isArray(catalog) ? catalog : []).filter(row => row && typeof row.id === 'string' && Number.isFinite(detail?.turnStartedAt) && (row.createdAt >= detail.turnStartedAt || summaries?.[row.id]?.projectionValues?.subagentTiming?.active?.since >= detail.turnStartedAt || observedAgents.includes(row.id))).slice(-64).map(row => {
+    const summary = summaries?.[row.id], child = statuses?.get(row.id)
+    const running = child?.running ?? summary?.running
+    const completed = row.mode !== 'external' && running === false && summary?.projectionValues?.subagentTiming?.lastTurnCompleted === true
+    return { id: row.id, name: escortText(row.label, 48) || '子 Agent', status: running === true ? 'running' : completed ? 'completed' : running === false ? 'idle' : 'unknown' }
+  })
+  return {
+    available: !!sessionId && detail !== undefined,
+    title: escortText(detail?.request) || escortText(title) || (sessionId ? '当前会话' : '尚未选择会话'),
+    request: escortText(detail?.request), sessionTitle: escortText(title),
+    todos: (Array.isArray(todos) ? todos : []).filter(row => row && escortTodoStatus[row.status] && typeof row.content === 'string').slice(0, 64).map(row => ({ content: escortText(row.content, 160), status: row.status })),
+    agents, cargo: (Array.isArray(detail?.cargo) ? detail.cargo : []).map(name => escortText(name, 80)).filter(Boolean).slice(0, 24),
+    running: status?.running === true, endReason: detail?.endReason || null,
+    turn: Number.isSafeInteger(detail?.turn) ? detail.turn : -1, call: null,
+  }
+}
+
+/** Sync metadata while paused too. Only newly observed events create gameplay effects. */
+function syncEscortLive(g, view, mission, baseline = false) {
+  if (g.mode !== 'live') return
+  g.live = view
+  g.todos = view.todos.map(row => escortTodoStatus[row.status])
+  g.agents = view.agents.map(row => row.status)
+  g.wings = Math.min(2, view.agents.filter(row => row.status === 'completed').length)
+  g.cargo = view.cargo.slice()
+  const log = (source, text) => { g.log.push({ source, text, time: g.time }); g.log = g.log.slice(-20) }
+  if (!mission || !Number.isSafeInteger(mission.turn)) return
+  const call = [...(mission.calls || [])].reverse().find(row => row.phase === 'running')
+  g.live = { ...view, call: call ? { name: escortText(call.name, 40), text: '工具正在执行 · 返回后投放补给' } : null }
+  const cursor = g.liveCursor
+  const ids = (mission.calls || []).map(row => String(row.id ?? row.seq))
+  const known = cursor?.turn === mission.turn ? cursor.calls || [] : []
+  const spawn = row => {
+    const id = `${mission.turn}:${row.id ?? row.seq}`
+    if (g.enemies.some(e => e.callId === id)) return
+    if (g.enemies.filter(e => e.tool).length < 3) g.enemies.push({ x: 100 + (row.seq % 3) * 140, y: -30, hp: 8, maxHP: 8, heavy: true, kind: 'gunner', fire: 2.4, speed: 34, age: 0, hit: 0, tool: escortText(row.name, 40), callId: id })
+    log('工具', `${escortText(row.name, 40)} 调用 · 拦截机进入战场`)
+  }
+  const fresh = baseline || !cursor || cursor.turn !== mission.turn
+  if (fresh) {
+    g.liveCursor = { turn: mission.turn, seq: mission.seq, steps: mission.steps || 0, calls: ids }
+    g.log = []
+    if (cursor && g.phase === 'playing') g.phase = 'paused'
+    log('任务', view.running ? '已连接当前会话 · 等待新任务事件' : '当前会话未在运行 · 可自由护航或体验联动演练')
+    for (const row of (mission.calls || []).filter(row => row.phase === 'running' && !known.includes(String(row.id ?? row.seq))).slice(-3)) spawn(row)
+    return
+  }
+  if (mission.seq <= cursor.seq) return
+  const updates = (mission.calls || []).filter(row => row.seq > cursor.seq)
+  const successful = updates.filter(row => row.phase === 'done')
+  for (const [i, row] of successful.slice(-2).entries()) {
+    if (g.drops.filter(d => d.source).length < 6) g.drops.push({ x: 170 + i * 130, y: 200, type: 'boost', ttl: 16, source: escortText(row.name, 40), born: g.time })
+    log('工具', `${escortText(row.name, 40)} 返回 · 火力补给已投放`)
+  }
+  for (const row of updates.filter(row => !known.includes(String(row.id ?? row.seq))).slice(-3)) spawn(row)
+  for (const row of updates.filter(row => row.phase === 'error').slice(-2)) log('工具', `${escortText(row.name, 40)} 执行异常 · 以会话结果为准`)
+  if ((mission.steps || 0) > cursor.steps && g.drops.filter(d => d.source).length < 6) g.drops.push({ x: 240, y: 260, type: 'shield', ttl: 16, source: 'Step 完成', born: g.time })
+  if (!mission.running && g.phase === 'playing') {
+    g.phase = 'paused'
+    log('任务', '本轮任务已停止 · 战场暂停，请查看会话结果')
+  }
+  g.liveCursor = { turn: mission.turn, seq: mission.seq, steps: mission.steps || 0, calls: ids }
+}
+
+/** Keep task wording and filenames in memory, not the game's local checkpoint. */
+function saveEscortAction(g) {
+  return JSON.stringify(g.mode === 'live' ? { ...g, live: undefined, todos: [], agents: [], cargo: [], log: [] } : g)
+}
+
+function Expedition(props) {
+  const { useState, useRef } = React
+  const { useProjection, useSessions, useSessionStatus, sessionId } = props
+  const [mode, setMode] = useState('live')
+  const detail = useProjection('whileplayExpedition'), mission = useProjection('whileplayMission')
+  const title = useProjection('title'), todos = useProjection('todos'), catalog = useProjection('subagentCatalog')
+  const summaries = useSessions(s => s.byId), statuses = useSessionStatus(s => s)
+  const observed = useRef({ turn: -1, ids: [] })
+  const liveView = escortLiveView({ sessionId, title, detail, todos, catalog, summaries, statuses, status: statuses?.get(sessionId), observedAgents: observed.current.turn === detail?.turn ? observed.current.ids : [] })
+  observed.current = { turn: detail?.turn, ids: liveView.agents.map(row => row.id) }
+  return h(EscortBattle, { ...props, key: `${sessionId}:${mode}`, mode, setMode, liveView, mission })
+}
+
+function EscortBattle({ sessionId, frame, panelRef, onMove, gestureProps, onClose, useSessionStatus, mode, setMode, liveView, mission }) {
+  const { useRef, useState, useEffect } = React
+  const status = useSessionStatus(snapshot => snapshot.get(sessionId)), blocked = !!status?.pendingInteraction || status?.running === undefined
+  const live = mode === 'live'
+  const key = `${live ? 'dsh-whileplay.escort-live.v1' : 'dsh-whileplay.escort-action.v2'}:${sessionId || 'draft'}`
+  const game = useRef(null), canvasRef = useRef(null), input = useRef({ keys: new Set(), pointer: false, x: 240, y: 625 })
+  if (!game.current) { try { game.current = restoreEscortAction(localStorage.getItem(key)) } catch {} if (game.current?.mode !== mode) game.current = null; game.current ||= createEscortAction(mode); if (live) syncEscortLive(game.current, liveView, mission, true) }
+  const [active, setActive] = useState(false), [, redraw] = useState(0), [saveFailed, setSaveFailed] = useState(false), [confirmRestart, setConfirmRestart] = useState(false)
+  const record = useRef(0)
+  if (!record.current) { try { const n = Number(localStorage.getItem('dsh-whileplay.escort-record.v1')); if (Number.isFinite(n) && n > 0 && n < 1e7) record.current = n } catch {} }
+  const clear = () => { input.current.keys.clear(); input.current.pointer = false }
+  const save = () => { try { localStorage.setItem(key, saveEscortAction(game.current)); if (['complete', 'over'].includes(game.current.phase) && game.current.score > record.current) { record.current = game.current.score; localStorage.setItem('dsh-whileplay.escort-record.v1', String(record.current)) } } catch { setSaveFailed(true) } }
+  const paint = () => { if (canvasRef.current) drawEscortAction(canvasRef.current.getContext('2d'), game.current, { ...canvasPalette(canvasRef.current), reducedMotion: !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches }) }
+  const pause = () => { clear(); if (game.current.phase === 'playing') game.current.phase = 'paused'; setActive(false); save(); redraw(n => n + 1); paint() }
+  const start = () => {
+    if (blocked || ['complete', 'over', 'attention'].includes(game.current.phase)) return
+    game.current.phase = 'playing'; game.current.player.grace = Math.max(1.5, game.current.player.grace)
+    clear(); setActive(true); redraw(n => n + 1); canvasRef.current?.focus()
+  }
+  const skill = kind => { if (!blocked && actionSupport(game.current, kind)) { save(); redraw(n => n + 1); paint(); canvasRef.current?.focus() } }
+  const wasRunning = useRef(status?.running)
+  useEffect(() => {
+    if (!live) return
+    syncEscortLive(game.current, liveView, mission)
+    if ((wasRunning.current === true && status?.running === false) || game.current.phase !== 'playing') setActive(false)
+    if (wasRunning.current === true && status?.running === false && game.current.phase === 'playing') game.current.phase = 'paused'
+    wasRunning.current = status?.running
+    save(); redraw(n => n + 1); paint()
+  }, [liveView, mission, status?.running])
+  useEffect(() => { if (blocked) pause() }, [blocked])
+  useEffect(() => {
+    const blur = () => pause(), hidden = () => { if (document.hidden) pause() }
+    window.addEventListener('blur', blur); window.addEventListener('pagehide', blur); document.addEventListener('visibilitychange', hidden)
+    return () => { clear(); save(); window.removeEventListener('blur', blur); window.removeEventListener('pagehide', blur); document.removeEventListener('visibilitychange', hidden) }
+  }, [])
+  useEffect(() => {
+    paint()
+    const observer = new MutationObserver(paint); observer.observe(document.body, { attributes: true, attributeFilter: ['data-ds-dark-theme', 'style'] })
+    if (!active) return () => observer.disconnect()
+    let raf, last, lastHUD = -1, lastSave = -1, disposed = false
+    const tick = now => {
+      if (disposed) return
+      if (last !== undefined) stepEscortAction(game.current, input.current, (now - last) / 1000)
+      last = now; paint()
+      if (Math.floor(game.current.time * 5) !== lastHUD) { lastHUD = Math.floor(game.current.time * 5); redraw(n => n + 1) }
+      if (Math.floor(game.current.time) !== lastSave) { lastSave = Math.floor(game.current.time); save() }
+      if (game.current.phase !== 'playing') { setActive(false); save(); redraw(n => n + 1); return }
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => { disposed = true; cancelAnimationFrame(raf); observer.disconnect() }
+  }, [active])
+  const g = game.current
+  const todoRows = live ? (g.live?.todos || []) : ESCORT_ROUTE_NODES.map((row, i) => ({ content: row.task, status: g.todos[i] === '已完成' ? 'completed' : g.todos[i] === '进行中' ? 'in_progress' : 'pending' }))
+  const agentRows = live ? (g.live?.agents || []) : ['界面设计队', '计时逻辑队'].map((name, i) => ({ id: `demo-agent-${i}`, name, status: g.agents[i] === '已归航' ? 'completed' : 'running' }))
+  const switchMode = next => { pause(); setMode(next) }
+  const move = (event, edge) => { if (edge || !event.target.closest('button')) pause(); onMove(event, edge) }
+  const pointer = event => { const b = event.currentTarget.getBoundingClientRect(); input.current.x = (event.clientX - b.left) / b.width * 480; input.current.y = (event.clientY - b.top) / b.height * 720 }
+  const keyDown = event => {
+    if (event.ctrlKey || event.metaKey || event.altKey) return
+    const movement = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyW', 'KeyA', 'KeyS', 'KeyD']
+    if (![...movement, 'KeyQ', 'KeyE', 'Space', 'Escape'].includes(event.code)) return
+    event.preventDefault(); event.stopPropagation()
+    if (event.code === 'Escape') { pause(); return }
+    if (!active || blocked) return
+    if (event.code === 'KeyQ' && !event.repeat) skill('repair')
+    else if (event.code === 'KeyE' && !event.repeat) skill('strike')
+    else if (event.code === 'Space' && !event.repeat) skill('dash')
+    else if (movement.includes(event.code)) input.current.keys.add(event.code)
+  }
+  const decide = decision => { if (blocked || g.phase !== 'attention') return; g.decision = decision; g.phase = 'paused'; g.notice = '模拟交互已处理 · 点击继续护航返回战场'; g.noticeUntil = g.time + 5; save(); redraw(n => n + 1); paint() }
+  const pad = (code, label) => h('button', { type: 'button', disabled: !active || blocked, 'aria-label': label,
+    onPointerDown: e => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); input.current.keys.add(code) },
+    onPointerUp: () => input.current.keys.delete(code), onPointerCancel: () => input.current.keys.delete(code), onLostPointerCapture: () => input.current.keys.delete(code) }, label)
+  return h('section', { ref: panelRef, className: 'arcade-panel exp-action-panel', 'aria-label': '小队护送远征', style: { left: frame.x, top: frame.y, width: frame.width, height: frame.height, '--exp-play-height': `${Math.max(270, frame.height - 280)}px` }, onBlur: e => { if (!e.currentTarget.contains(e.relatedTarget)) pause() } },
+    h('header', { className: 'arcade-header exp-header', onPointerDown: e => move(e), ...gestureProps }, h('span', { className: 'exp-logo', 'aria-hidden': true }, '⌁'), h('div', { className: 'arcade-heading' }, h('h2', null, '小队护送远征'), h('p', null, 'Todo 航程 · 工具补给 · Agent 编队 · 成果交付')),
+      h('button', { type: 'button', onClick: active ? pause : start, disabled: blocked || ['attention', 'complete', 'over'].includes(g.phase) }, active ? '暂停护航' : '继续护航'), h('button', { type: 'button', onClick: () => { pause(); setConfirmRestart(true) } }, live ? '重新护航' : '重新演练'), h('button', { type: 'button', onClick: () => { pause(); onClose() }, 'aria-label': '返回游戏库' }, '×')),
+    h('div', { className: 'exp-simulation' }, h('div', { className: 'exp-modes', role: 'group', 'aria-label': '任务来源' }, h('button', { type: 'button', 'aria-pressed': live, onClick: () => { if (!live) switchMode('live') } }, '当前会话'), h('button', { type: 'button', 'aria-pressed': !live, onClick: () => { if (live) switchMode('demo') } }, '联动演练')), h('span', null, live ? !sessionId ? '选择会话后连接任务' : !liveView.available ? '正在连接会话数据' : status?.running ? '真实任务执行中' : '当前会话未在运行' : '示例任务 · 本地模拟')),
+    h('div', { className: 'exp-action-body' }, h('main', { className: 'exp-action-main' },
+      h('div', { className: 'exp-action-stage' }, h('canvas', { ref: canvasRef, width: 480, height: 720, tabIndex: 0, 'aria-label': '实时护航战场', onKeyDown: keyDown, onKeyUp: e => input.current.keys.delete(e.code), onBlur: clear,
+        onPointerDown: e => { e.currentTarget.focus(); if (active) { e.currentTarget.setPointerCapture(e.pointerId); input.current.pointer = true; pointer(e) } }, onPointerMove: e => { if (input.current.pointer) pointer(e) }, onPointerUp: () => { input.current.pointer = false }, onPointerCancel: () => { input.current.pointer = false }, onLostPointerCapture: () => { input.current.pointer = false } }),
+        (!active || blocked) && h('div', { className: 'exp-action-curtain' }, h('h3', null, blocked ? '真实会话需要处理' : ({ ready: '破浪出航', paused: '战场已暂停', attention: '模拟任务需要你查看', complete: '成果已入港 · 护航完成', over: '护航失利' })[g.phase] || '战场已暂停'),
+          h('p', null, blocked ? '先处理真实会话，再手动继续。' : g.phase === 'ready' ? live ? '护航当前会话：Todo 成为航程节点，工具调用带来拦截机和补给，完成任务的 Agent 加入编队，已交付文件装船。没有任务运行时也可以自由练习。' : '护送番茄钟小站的网页与使用说明。穿过四个 Todo 航段，接住工具补给，与归航的 Agent 并肩作战。' : g.phase === 'attention' ? '模拟构建检查请求。战场冻结，两种决定奖励相同，不执行真实命令。' : g.phase === 'complete' ? `${g.convoy.hp >= 80 && g.bossKills >= 2 ? 'S · 王牌护航' : g.convoy.hp >= 50 ? 'A · 坚实护卫' : 'B · 突围归航'}｜得分 ${g.score} · 最高连击 ${g.bestCombo} · 旗舰 ${g.bossKills}/2。两件成果已入港（模拟）。` : g.phase === 'over' ? `本次得分 ${g.score} · 最高连击 ${g.bestCombo}。拾取蓝色能量提升火力，红线锁定后用空格冲刺，运输船受损时按 Q。` : live ? '战场已冻结；任务信息继续同步。任务是否完成，以会话结果为准。' : '演练、敌机、子弹与补给都已冻结。'),
+          g.phase === 'attention' ? h('div', { className: 'exp-action-line' }, h('button', { type: 'button', disabled: blocked, onClick: () => decide('allow') }, '模拟允许'), h('button', { type: 'button', disabled: blocked, onClick: () => decide('reject') }, '模拟拒绝')) : ['ready', 'paused'].includes(g.phase) ? h('button', { type: 'button', className: 'exp-primary', disabled: blocked, onClick: start }, g.phase === 'ready' ? live ? '开始任务护航' : '开始实时演练' : '继续护航') : h('button', { type: 'button', onClick: () => setConfirmRestart(true) }, '再护航一次'))),
+      h('div', { className: 'exp-action-skills' }, h('button', { type: 'button', className: 'exp-dash', disabled: !active || blocked || g.dashCooldown > 0, onClick: () => skill('dash') }, g.dashCooldown > 0 ? `冲刺 · ${g.dashCooldown.toFixed(1)}s` : '空格 · 闪避冲刺'), h('button', { type: 'button', disabled: !active || blocked || !g.repair, onClick: () => skill('repair') }, `Q · 工程修复 ×${g.repair}`), h('button', { type: 'button', disabled: !active || blocked || !g.strike, onClick: () => skill('strike') }, `E · 空袭支援 ×${g.strike}`), h('div', { className: 'exp-action-pad' }, pad('ArrowLeft', '←'), pad('ArrowUp', '↑'), pad('ArrowDown', '↓'), pad('ArrowRight', '→'))), h('p', { className: 'exp-action-help' }, 'WASD / 方向键移动 · 自动锁敌 · 空格冲刺 · Q 修复 · E 空袭 · 蓝色能量升级火力')),
+      h('aside', { className: 'exp-action-sidebar' }, h('small', { className: 'exp-eyebrow' }, live ? '任务简报 · 当前会话' : '任务简报 · 联动演练'), h('h3', { className: 'exp-mission-title' }, live ? liveView.title : '番茄钟小站'), h('p', { className: 'exp-mission-goal' }, live ? liveView.sessionTitle && liveView.sessionTitle !== liveView.title ? `会话：${liveView.sessionTitle}` : '跟随当前会话事件实时更新' : '交付网页与使用说明'), h('h4', null, 'TODO / 航程'), ...todoRows.map((row, i) => h('div', { className: 'exp-action-todo', key: i, 'data-status': escortTodoStatus[row.status] }, h('span', null, row.status === 'completed' ? '✓' : `${i + 1}`), h('div', null, row.content, h('small', null, live ? escortTodoStatus[row.status] : `${ESCORT_ROUTE_NODES[i].name} · ${escortTodoStatus[row.status]}`)))), !todoRows.length && h('p', { className: 'exp-muted' }, '当前任务尚未提供 Todo'),
+        h('h4', null, 'AGENTS / 护航编队'), ...agentRows.map(row => h('p', { className: 'exp-action-agent', key: row.id }, row.name, h('small', null, ({ running: '执行中', completed: '子任务完成 · 可提供僚机支援', idle: '已停止 · 未确认完成', unknown: '状态暂不可用' })[row.status]))), !agentRows.length && h('p', { className: 'exp-muted' }, '当前任务暂无子 Agent'), h('h4', null, '任务电台'), live && g.live?.call && h('div', { className: 'exp-action-event' }, h('small', null, '工具执行中'), h('p', null, g.live.call.name)), ...g.log.slice(-3).reverse().map((row, i) => h('div', { className: 'exp-action-event', key: `${g.log.length}-${i}` }, h('small', null, row.source), h('p', null, row.text))), !g.log.length && h('p', { className: 'exp-muted' }, live ? '等待当前会话的新事件' : '开始后，工具补给与支援队按时间进入战场。'), h('div', { className: 'exp-action-cargo' }, h('h4', null, '已装船 / 交付物'), ...g.cargo.map((name, i) => h('p', { key: i }, `✓ ${name}`)), !g.cargo.length && h('p', { className: 'exp-muted' }, live ? '尚未收到交付文件' : '等待网页与使用说明')))),
+    h('footer', { className: 'exp-footer', role: 'status' }, h('span', null, `${live ? `护航 ${Math.floor(g.time)} 秒` : `演练 ${Math.floor(g.time)} / 62 秒`} · ${active ? '实时战斗中' : '已暂停'}`), h('span', null, saveFailed ? '存储不可用' : `最佳 ${record.current.toLocaleString()} · 自动保存`)),
+    confirmRestart && h('div', { className: 'exp-modal-backdrop' }, h('div', { className: 'exp-modal', role: 'dialog', 'aria-modal': true, 'aria-label': live ? '重新护航' : '重新演练' }, h('h3', null, '从头开始实时护航？'), h('p', null, '覆盖当前模式的远征存档。任务本身和其他游戏不受影响。'), h('div', { className: 'exp-action-line' }, h('button', { type: 'button', onClick: () => setConfirmRestart(false) }, '取消'), h('button', { type: 'button', className: 'exp-primary', onClick: () => { game.current = createEscortAction(mode); if (live) syncEscortLive(game.current, liveView, mission); save(); setConfirmRestart(false); redraw(n => n + 1); paint() } }, '确认重开')))),
+    ...['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se'].map(edge => h('div', { key: edge, className: `arcade-resize-handle arcade-resize-${edge}`, onPointerDown: e => move(e, edge), ...gestureProps })))
+}
+
+const arcadeCSS = ".dsh-arcade {\n  --arcade-bg: var(--dsw-alias-bg-layer-1, #fff);\n  --arcade-soft: var(--dsw-alias-bg-base, #f8f9fb);\n  --arcade-border: var(--dsw-alias-border-l3, #e1e4e9);\n  --arcade-text: var(--dsw-alias-label-primary, #263148);\n  --arcade-muted: var(--dsw-alias-label-secondary, #697386);\n  --arcade-hover: var(--dsw-alias-interactive-bg-hover, #eef0f4);\n  --arcade-accent: var(--dsw-alias-brand-primary-new-colorprimary-new-color, #4d6bfe);\n  --arcade-background: var(--dsw-alias-bg-base, #f8f9fb);\n  --arcade-grid: var(--dsw-alias-border-l1, #e9ecf1);\n  --arcade-ink: var(--dsw-alias-label-primary, #263148);\n  --arcade-obstacle: var(--dsw-alias-label-caption, #aab5c8);\n  --arcade-food: var(--dsw-static-orange-500, #db8e48);\n  --arcade-enemy: var(--dsw-static-red-500, #d56868);\n  font-family: inherit;\n  color: inherit;\n}\n.dsh-arcade * { box-sizing: border-box; }\n.dsh-arcade button { font: inherit; cursor: pointer; border: 1px solid var(--arcade-border); border-radius: var(--dsw-radius-md, 8px); background: transparent; color: var(--arcade-text); padding: 7px 11px; touch-action: manipulation; }\n.dsh-arcade button:hover:not(:disabled) { background: var(--arcade-hover); }\n.dsh-arcade button:focus-visible, .dsh-arcade canvas:focus-visible, .arcade-search:focus-visible { outline: 2px solid var(--arcade-accent); outline-offset: 2px; }\n.dsh-arcade button:disabled { cursor: default; opacity: .4; }\n.dsh-arcade .arcade-launch { background: transparent; color: inherit; border-color: transparent; font-size: 12px; white-space: nowrap; }\n.arcade-panel { position: fixed; z-index: 60; right: auto; bottom: auto; container: arcade-window / inline-size; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--arcade-border); border-radius: 16px; background: var(--arcade-bg); color: var(--arcade-text); box-shadow: 0 16px 64px rgb(0 0 0 / 14%), 0 2px 8px rgb(0 0 0 / 4%); font-size: 13px; text-align: left; line-height: 1.5; }\n.arcade-header { display: flex; gap: 10px; align-items: center; padding: 18px 18px; border-bottom: 1px solid var(--arcade-border); flex-shrink: 0; cursor: grab; touch-action: none; user-select: none; }\n.arcade-header:active { cursor: grabbing; }\n.dsh-arcade .arcade-drag-handle { border: 0; cursor: grab; padding: 0; font-size: 22px; color: var(--arcade-muted); touch-action: none; }\n.dsh-arcade .arcade-mode-toggle { font-size: 11px; white-space: nowrap; padding: 5px 8px; }\n.arcade-heading { flex: 1; }\n.arcade-panel h2 { font-size: 17px; font-weight: 600; margin: 0; }\n.arcade-panel p { margin: 0; }\n.arcade-heading p { color: var(--arcade-muted); margin-top: 2px; font-size: 12px; }\n.dsh-arcade .arcade-close { border: 0; font-size: 22px; line-height: 28px; padding: 0; width: 30px; height: 30px; color: var(--arcade-muted); }\n.dsh-arcade .arcade-menu-toggle { display: none; font-size: 12px; }\n.arcade-body { display: flex; flex: 1; min-height: 0; }\n.arcade-library { flex: 0 0 178px; width: 178px; background: var(--arcade-soft); border-right: 1px solid var(--arcade-border); padding: 20px 12px 16px; display: flex; flex-direction: column; min-height: 0; gap: 14px; }\n.arcade-library-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 4px; }\n.arcade-library-heading strong { font-size: 12px; font-weight: 600; }\n.arcade-library-heading small { font-size: 10px; color: var(--arcade-muted); }\n.arcade-search { display: block; width: 100%; min-width: 0; font: inherit; font-size: 12px; line-height: 20px; padding: 6px 9px; background: var(--arcade-bg); border: 1px solid var(--arcade-border); color: var(--arcade-text); border-radius: 7px; }\n.arcade-search::placeholder { color: var(--arcade-muted); }\n.arcade-filters { display: flex; flex-wrap: wrap; gap: 4px; }\n.dsh-arcade .arcade-filters button { font-size: 11px; border: 0; border-radius: 5px; padding: 3px 7px; color: var(--arcade-muted); }\n.dsh-arcade .arcade-filters button[aria-pressed=true] { color: var(--arcade-text); background: var(--arcade-hover); font-weight: 600; }\n.arcade-game-list { flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 7px; scrollbar-width: thin; }\n.dsh-arcade .arcade-game-list button { flex-shrink: 0; display: flex; align-items: center; gap: 11px; text-align: left; padding: 12px 9px; border-color: transparent; }\n.arcade-game-list button[aria-pressed=true] { background: var(--arcade-bg); border-color: var(--arcade-border); box-shadow: 0 1px 3px rgb(0 0 0 / 3%); }\n.arcade-game-icon { flex-shrink: 0; color: var(--arcade-muted); }\n.arcade-game-list button[aria-pressed=true] .arcade-game-icon { color: var(--arcade-accent); }\n.arcade-game-list strong { display: block; font-size: 12px; font-weight: 500; }\n.arcade-game-list small { display: block; font-size: 10px; color: var(--arcade-muted); margin-top: 3px; }\n.arcade-empty { color: var(--arcade-muted); padding: 12px 5px; font-size: 12px; }\n.arcade-library-tip { color: var(--arcade-muted); font-size: 10px; padding: 4px; }\n.arcade-play { flex: 1; min-width: 0; min-height: 0; padding: 20px 24px 16px; display: flex; flex-direction: column; overflow-y: auto; }\n.arcade-game-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }\n.arcade-game-heading h3 { font-size: 18px; font-weight: 600; margin: 0; }\n.arcade-game-heading p { color: var(--arcade-muted); font-size: 12px; margin-top: 3px; }\n.arcade-orientation { font-size: 10px; color: var(--arcade-muted); background: var(--arcade-soft); border: 1px solid var(--arcade-border); border-radius: 5px; padding: 2px 7px; white-space: nowrap; }\n.arcade-scores { flex-shrink: 0; display: flex; justify-content: space-between; margin: 15px 0 12px; color: var(--arcade-muted); font-size: 11px; }\n.arcade-scores span { display: flex; align-items: baseline; gap: 9px; }\n.arcade-scores strong { color: var(--arcade-text); font: 21px ui-monospace, monospace; letter-spacing: 1px; }\n.arcade-arena { flex: 1; display: grid; place-items: center; min-height: 80px; padding: 4px 0; }\n.arcade-stage { position: relative; width: 100%; border: 1px solid var(--arcade-border); border-radius: 10px; overflow: hidden; background: var(--arcade-soft); }\n.arcade-panel[data-orientation=portrait] .arcade-stage { width: min(100%, 264px, calc((100dvh - 370px) * 2 / 3)); }\n.arcade-panel[data-orientation=square] .arcade-stage { width: min(100%, 360px, calc(100dvh - 430px)); }\n.arcade-tank-hud { display: flex; justify-content: space-between; gap: 12px; font-size: 11px; color: var(--arcade-muted); margin-bottom: 8px; flex-shrink: 0; }\n.arcade-stage canvas { display: block; width: 100%; height: auto; touch-action: none; }\n.arcade-curtain { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: color-mix(in srgb, var(--arcade-bg) 86%, transparent); pointer-events: none; text-align: center; padding: 12px; }\n.arcade-curtain-icon { width: 36px; height: 36px; color: var(--arcade-muted); margin-bottom: 4px; }\n.arcade-curtain strong { font-size: 13px; font-weight: 500; color: var(--arcade-muted); }\n.dsh-arcade .arcade-primary { background: var(--dsw-alias-button-primary-fill, #263148); color: var(--dsw-alias-label-primary-foreground, #fff); border-color: transparent; pointer-events: auto; padding: 8px 18px; }\n.dsh-arcade .arcade-primary:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover, #424c60); }\n.arcade-panel .arcade-hint { flex-shrink: 0; color: var(--arcade-muted); font-size: 11px; margin: 12px 0; text-align: center; }\n.arcade-toolbar { flex-shrink: 0; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }\n.arcade-controls, .arcade-actions { display: flex; gap: 5px; }\n.arcade-controls button { min-width: 30px; padding: 6px 8px; font-size: 11px; touch-action: none; }\n.arcade-actions button { padding: 6px 10px; font-size: 11px; }\n.arcade-footnote { display: block; flex-shrink: 0; color: var(--arcade-muted); font-size: 10px; margin-top: 12px; }\n.arcade-status { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 11px 22px; color: var(--arcade-muted); background: var(--arcade-soft); border-top: 1px solid var(--arcade-border); font-size: 11px; }\n.arcade-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--arcade-muted); flex-shrink: 0; }\n.arcade-dot.working { background: var(--arcade-accent); }\n@container arcade-window (max-width: 600px) {\n  .arcade-header { padding: 14px 16px; gap: 8px; }\n  .dsh-arcade .arcade-menu-toggle { display: block; }\n  .arcade-body { flex-direction: column; }\n  .arcade-library { display: none; width: 100%; flex: 0 0 auto; border-right: 0; border-bottom: 1px solid var(--arcade-border); padding: 12px 16px; gap: 8px; max-height: 240px; }\n  .arcade-library[data-expanded=true] { display: flex; flex: 1; max-height: none; }\n  .arcade-body:has(.arcade-library[data-expanded=true]) .arcade-play { display: none; }\n  .arcade-library-heading, .arcade-library-tip { display: none; }\n  .arcade-game-list { flex: 1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: max-content; align-content: start; max-height: none; }\n  .dsh-arcade .arcade-game-list button { padding: 7px; }\n  .arcade-play { padding: 16px; }\n  .arcade-panel[data-orientation=portrait] .arcade-stage { width: min(100%, 264px, calc((100dvh - 345px) * 2 / 3)); }\n  .arcade-status { padding: 10px 16px; }\n  .arcade-controls, .arcade-actions { gap: 4px; }\n}\n@media (max-height: 620px) {\n  .arcade-play { overflow-y: auto; }\n}\r\n.arcade-resize-handle { position: absolute; z-index: 8; touch-action: none; }\n.arcade-resize-n, .arcade-resize-s { left: 14px; right: 14px; height: 7px; cursor: ns-resize; }\n.arcade-resize-n { top: 0; } .arcade-resize-s { bottom: 0; }\n.arcade-resize-e, .arcade-resize-w { top: 14px; bottom: 14px; width: 7px; cursor: ew-resize; }\n.arcade-resize-e { right: 0; } .arcade-resize-w { left: 0; }\n.arcade-resize-nw, .arcade-resize-ne, .arcade-resize-sw, .arcade-resize-se { width: 16px; height: 16px; }\n.arcade-resize-nw { top: 0; left: 0; cursor: nwse-resize; }\n.arcade-resize-ne { top: 0; right: 0; cursor: nesw-resize; }\n.arcade-resize-sw { bottom: 0; left: 0; cursor: nesw-resize; }\n.arcade-resize-se { bottom: 0; right: 0; cursor: nwse-resize; }\n.arcade-resize-se::after { content: ''; position: absolute; width: 7px; height: 7px; right: 4px; bottom: 4px; border-right: 2px solid var(--arcade-muted); border-bottom: 2px solid var(--arcade-muted); opacity: .4; }\n.arcade-resize-handle:focus-visible { outline: 2px solid var(--arcade-accent); outline-offset: -2px; }\n.arcade-panel[data-minimal=true] { border-radius: 10px; }\n.arcade-panel[data-minimal=true] > .arcade-header,\n.arcade-panel[data-minimal=true] > .arcade-status,\n.arcade-panel[data-minimal=true] .arcade-library,\n.arcade-panel[data-minimal=true] .arcade-play > :not(.arcade-arena) { display: none; }\n.arcade-panel[data-minimal=true] .arcade-body { display: flex; height: 100%; }\n.arcade-panel[data-minimal=true] .arcade-play { display: flex; padding: 0; overflow: hidden; }\n.arcade-panel[data-minimal=true] .arcade-arena { padding: 0; min-height: 0; width: 100%; height: 100%; }\n.arcade-panel[data-minimal=true] .arcade-stage { border: 0; border-radius: 0; }\n.arcade-panel[data-minimal=true] canvas { width: 100%; height: 100%; }\n.arcade-panel[data-minimal=true] .arcade-curtain-icon { display: none; }\n.arcade-panel[data-minimal=true] .arcade-curtain { gap: 10px; }\n.arcade-panel[data-minimal=true] .arcade-curtain strong { font-size: 11px; }\n.arcade-panel[data-minimal=true] .arcade-primary { padding: 6px 10px; font-size: 11px; }\n.arcade-mini-tools { position: absolute; top: 8px; left: 8px; right: 8px; display: flex; justify-content: flex-end; align-items: center; gap: 4px; z-index: 7; opacity: 0; transition: opacity .12s; pointer-events: none; }\n.arcade-panel:hover .arcade-mini-tools, .arcade-mini-tools:focus-within { opacity: 1; }\n.dsh-arcade .arcade-mini-tools button { pointer-events: auto; width: 28px; height: 28px; padding: 0; display: grid; place-items: center; background: color-mix(in srgb, var(--arcade-bg) 94%, transparent); border: 1px solid var(--arcade-border); font-size: 15px; box-shadow: 0 1px 4px rgb(0 0 0 / 8%); }\n.dsh-arcade .arcade-mini-tools .arcade-mini-drag { margin-right: auto; cursor: grab; touch-action: none; font-size: 22px; }\n.arcade-mini-notice { position: absolute; bottom: 8px; left: 8px; right: 8px; padding: 7px 9px; background: var(--arcade-bg); border: 1px solid var(--arcade-border); border-radius: 6px; font-size: 10px; color: var(--arcade-text); z-index: 6; }\n@media (hover: none) { .arcade-mini-tools { opacity: 1; } }\n.arcade-escort-info { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--arcade-muted); font-size: 11px; }\n.dsh-arcade .arcade-escort-info button { flex-shrink: 0; padding: 4px 8px; font-size: 11px; }\n.arcade-escort-summary { display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 14px; border: 1px solid var(--arcade-border); border-radius: 10px; background: var(--arcade-bg); font-size: 12px; }\n.arcade-escort-summary small { font-size: 10px; color: var(--arcade-muted); }\n.arcade-escort-summary span { font-variant-numeric: tabular-nums; font-size: 17px; }\n.arcade-upgrades { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; gap: 5px; color: var(--arcade-text); font-size: 11px; }\n.arcade-upgrades small { color: var(--arcade-muted); }\n.dsh-arcade .arcade-upgrades button { padding: 5px 8px; border: 1px solid var(--arcade-accent); font-size: 11px; }\n@media (max-height: 800px) {\n  .arcade-panel[data-orientation=portrait] .arcade-header { padding-top: 11px; padding-bottom: 11px; }\n  .arcade-panel[data-orientation=portrait] .arcade-heading p,\n  .arcade-panel[data-orientation=portrait] .arcade-game-heading p { display: none; }\n  .arcade-panel[data-orientation=portrait] .arcade-play { padding-top: 12px; padding-bottom: 10px; }\n  .arcade-panel[data-orientation=portrait] .arcade-scores { margin: 8px 0; }\n  .arcade-panel[data-orientation=portrait] .arcade-hint { margin: 6px 0; }\n  .arcade-panel[data-orientation=portrait] .arcade-footnote { margin-top: 6px; }\n}\n\n.exp-logo, .exp-library-icon { color: var(--arcade-accent); font-size: 30px; line-height: 1; }\n.exp-library-icon { width: 24px; flex-shrink: 0; }\n.exp-header { padding: 13px 18px; }\n.exp-header .arcade-heading p { display: block !important; font-size: 10px; }\n.exp-header button { padding: 5px 9px; font-size: 11px; }\n.exp-simulation { padding: 7px 18px; font-size: 10px; color: var(--arcade-muted); border-bottom: 1px solid var(--arcade-border); background: var(--arcade-soft); }\n.exp-simulation > span { color: var(--arcade-accent); font-weight: 600; margin-right: 9px; }\n.exp-simulation { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }\n.exp-modes { display: flex; gap: 4px; }\n.dsh-arcade .exp-modes button { padding: 4px 9px; font-size: 10px; border-radius: 5px; }\n.dsh-arcade .exp-modes button[aria-pressed='true'] { color: var(--arcade-accent); border-color: var(--arcade-accent); background: var(--arcade-bg); }\n.exp-action-body { display: grid; grid-template-columns: minmax(0,1fr) 202px; flex: 1; min-height: 0; overflow-y: auto; background: #0e202d; }\n.exp-action-main { min-width: 0; padding: 12px; display: flex; flex-direction: column; align-items: center; gap: 10px; background: radial-gradient(ellipse at top,#243e4b 0,#132b39 40%,#0b1b28 100%); }\n.exp-action-stage { position: relative; width: min(100%,calc(var(--exp-play-height, 560px) * 2 / 3)); flex-shrink: 0; border: 1px solid #42616c; border-radius: 9px; overflow: hidden; background: #0b2130; box-shadow: 0 14px 40px rgb(0 6 15 / 30%),0 0 0 4px rgb(6 18 28 / 20%); }\n.exp-action-stage canvas { display: block; width: 100%; height: auto; touch-action: none; }\n.exp-action-curtain { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 22px; text-align: center; gap: 18px; background: linear-gradient(180deg,rgb(8 23 33 / 72%),rgb(8 26 38 / 91%)); color: #e1e9e4; }\n.exp-action-curtain h3 { margin: 0; font-size: 26px; font-weight: 500; letter-spacing: 2px; }\n.exp-action-curtain p { color: #a8bec4; font-size: 12px; max-width: 280px; line-height: 1.9; }\n.dsh-arcade .exp-action-curtain button { background: #203d4e; color: #e0e8de; border-color: #567782; padding: 9px 18px; font-size: 12px; }\n.dsh-arcade .exp-action-curtain .exp-primary { background: #c9d8c5; color: #152f3e; border-color: #e2e9d6; padding: 12px 26px; font-weight: 600; box-shadow: 0 5px 20px rgb(0 0 0 / 20%); }\n.dsh-arcade .exp-action-curtain button:hover:not(:disabled) { background: #466475; }\n.dsh-arcade .exp-action-curtain .exp-primary:hover:not(:disabled) { background: #e2ead7; }\n.exp-action-line, .exp-action-skills, .exp-action-pad { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; justify-content: center; }\n.exp-action-line { justify-content: flex-end; margin-top: 14px; }\n.exp-action-skills { width: 100%; }\n.dsh-arcade .exp-action-skills button { background: #203745; color: #d7e3df; border-color: #405968; border-radius: 6px; font-size: 10px; padding: 10px 11px; box-shadow: inset 0 1px 0 rgb(220 237 228 / 5%); }\n.dsh-arcade .exp-action-skills button:hover:not(:disabled) { background: #325263; border-color: #7798a5; }\n.dsh-arcade .exp-action-skills .exp-dash { background: #2a4552; color: #d7d9be; border-color: #6c827e; }\n.dsh-arcade .exp-action-skills button:disabled { opacity: .44; }\n.exp-action-pad { gap: 4px; }\n.dsh-arcade .exp-action-pad button { width: 28px; padding: 10px 0; touch-action: none; }\n.exp-action-help { color: #7f9da9; font-size: 10px; line-height: 1.7; text-align: center; }\n.exp-action-sidebar { border-left: 1px solid #304854; padding: 22px 15px; background: linear-gradient(180deg,#172d3b,#102330); color: #d0ddd9; overflow-y: auto; scrollbar-width: thin; }\n.exp-eyebrow { color: #80a6b8; font-size: 9px; letter-spacing: .6px; }\n.exp-mission-title { font-size: 20px; font-weight: 500; margin: 8px 0 4px; color: #e4e8db; letter-spacing: .5px; }\n.exp-mission-title { font-size: 16px; line-height: 1.65; overflow-wrap: anywhere; }\n.exp-action-todo > div { min-width: 0; overflow-wrap: anywhere; }\n.exp-mission-goal { color: #8ca7b2; font-size: 11px; }\n.exp-action-sidebar h4 { font-size: 9px; color: #7396a6; letter-spacing: 1px; margin: 23px 0 13px; font-weight: 500; }\n.exp-action-todo { display: flex; gap: 9px; align-items: flex-start; padding: 9px 6px; border-left: 2px solid #344c58; font-size: 11px; margin: 0 0 6px; }\n.exp-action-todo > span { color: #6a94a7; font: 11px ui-monospace,monospace; padding-top: 1px; }\n.exp-action-todo small, .exp-action-agent small { display: block; margin-top: 5px; font-size: 9px; color: #7f9ba9; }\n.exp-action-todo[data-status='进行中'] { border-color: #8dbcca; background: linear-gradient(90deg,#264854,transparent); color: #eff0dd; }\n.exp-action-todo[data-status='进行中'] small { color: #9ec3c9; }\n.exp-action-todo[data-status='已完成'] { border-color: #627f70; }\n.exp-action-todo[data-status='已完成'] > span { color: #a8c2a6; }\n.exp-action-agent { margin-bottom: 13px !important; font-size: 11px; color: #c2d4d2; padding-left: 8px; border-left: 2px solid #4d7080; }\n.exp-action-event { border-top: 1px solid #2b414e; padding-top: 9px; margin-top: 10px; }\n.exp-action-event small { color: #9fbcb6; font-size: 9px; }\n.exp-action-event p, .exp-action-cargo p { color: #90aab5; font-size: 10px; line-height: 1.8; margin-top: 5px; overflow-wrap: anywhere; }\n.exp-action-cargo p { color: #c0c8a8; }\n.exp-muted { color: #7796a5; font-size: 10px; line-height: 1.8; }\n.exp-footer { display: flex; justify-content: space-between; gap: 8px; padding: 9px 18px; border-top: 1px solid var(--arcade-border); font-size: 10px; color: var(--arcade-muted); flex-shrink: 0; }\n.exp-modal-backdrop { position: absolute; inset: 0; background: rgb(0 7 16 / 55%); z-index: 20; display: grid; place-items: center; padding: 20px; }\n.exp-modal { background: var(--arcade-bg); color: var(--arcade-text); border: 1px solid var(--arcade-border); border-radius: 12px; padding: 24px; width: min(100%,460px); max-height: 90%; overflow-y: auto; box-shadow: 0 12px 40px rgb(0 0 0 / 24%); }\n.exp-modal h3 { margin: 0 0 14px; font-size: 18px; }\n.exp-modal p { color: var(--arcade-muted); line-height: 1.8; font-size: 12px; }\n.dsh-arcade .exp-modal .exp-primary { background: var(--arcade-accent); color: white; border-color: var(--arcade-accent); }\n@container arcade-window (max-width: 580px) {\n .exp-action-body { display: block; }\n .exp-action-main { padding: 12px 8px; }\n .exp-action-sidebar { border-left: 0; border-top: 1px solid #304854; overflow: visible; }\n .exp-action-curtain { padding: 16px; gap: 13px; }\n .exp-action-curtain h3 { font-size: 21px; }\n .exp-action-curtain p { font-size: 11px; }\n .exp-action-pad { width: 100%; }\n .dsh-arcade .exp-action-pad button { width: 42px; padding: 7px 0; }\n .exp-action-todo { display: inline-flex; width: 49%; }\n .exp-footer { padding: 8px 12px; font-size: 9px; }\n}\r\n"
 const React = require('react')
 const h = React.createElement
 const { useEffect, useRef, useState } = React
@@ -739,10 +1946,11 @@ const dictionaries = {
     score: '得分', best: '最高分', paused: '已暂停', over: '本局结束', idle: '随时开始，随时停下',
     working: 'AI 正在工作 · 可以玩一小局', ready: 'AI 已结束运行 · 游戏已暂停，请查看回复',
     attention: 'AI 需要你的操作 · 游戏已暂停', unavailable: '会话状态暂不可用 · 游戏已暂停', switched: '已切换会话 · 游戏已暂停',
-    focus: '离开游戏后已暂停', planeHint: '方向键或拖动移动，自动射击。接住 Step 补给：双发 8 秒、护盾抵挡一次、炸弹清除敌弹并伤害敌机。',
+    focus: '离开游戏后已暂停', planeHint: '方向键或拖动移动，自动射击。Step 带来补给与升级；接住升级胶囊，或按 1 / 2 选择火力、生存、机动路线。',
     snakeHint: '方向键转向，避开边界和自己。工具带来限时果实；Step 补给提供双倍、护盾或减速。', tankHint: '方向键移动，空格射击。工具生成三血精英坦克；Step 补给提供连发、护盾或炸弹。',
     canvas: '游戏画布，点击后可用键盘操作', up: '上', down: '下', left: '左', right: '右', fire: '发射',
-    saveError: '浏览器禁止保存，最高分仅保留在本次打开期间。', resetHint: '切换游戏会开始新的一局。',
+    saveError: '浏览器存储不可用，纪录和存档可能无法保存。', resetHint: '飞机大战按会话保存；切换游戏或刷新后，可继续这一局。',
+    restored: '已恢复飞机存档 · 点击继续', upgradeChoice: '二选一升级', firePath: '火力', guardPath: '生存', movePath: '机动', savedRound: '本局已保存，可先返回会话',
     library: '游戏库', count: '{count} 款游戏', search: '搜索游戏', all: '全部', flight: '飞行', action: '动作', puzzle: '益智',
     noResults: '没有找到游戏，试试其他关键词。', portrait: '竖屏', landscape: '横屏',
     planeDescription: '自动开火，迎战敌机', tankDescription: '穿越砖墙，守卫基地', snakeDescription: '再吃一颗，就一颗',
@@ -759,17 +1967,18 @@ const dictionaries = {
     score: 'Score', best: 'Best', paused: 'Paused', over: 'Game over', idle: 'Start anytime. Pause anytime.',
     working: 'AI is working · enjoy a little game', ready: 'AI stopped · game paused, check the reply',
     attention: 'AI needs your input · game paused', unavailable: 'Session status unavailable · game paused', switched: 'Session changed · game paused',
-    focus: 'Game paused while away', planeHint: 'Arrows or drag to move; auto fire. Catch Step supplies: twin shot for 8s, one-hit shield, or a bomb clearing enemy shots and damaging aircraft.',
+    focus: 'Game paused while away', planeHint: 'Arrows or drag to move; auto fire. Steps bring supplies and upgrades. Catch an upgrade capsule or press 1 / 2 for Firepower, Survival or Mobility.',
     snakeHint: 'Arrows to turn; avoid walls and yourself. Tools spawn timed fruit; Steps provide double score, a shield or slow motion.', tankHint: 'Arrows to move, Space to fire. Tools spawn armored tanks; Steps provide rapid fire, a shield or a bomb.',
     canvas: 'Game canvas. Click to use keyboard controls', up: 'Up', down: 'Down', left: 'Left', right: 'Right', fire: 'Fire',
-    saveError: 'Browser storage is blocked. Best scores last only for this visit.', resetHint: 'Switching games starts a fresh round.',
+    saveError: 'Browser storage unavailable. Scores and checkpoints may not be saved.', resetHint: 'Air battle saves per session. Return after switching games or refreshing.',
+    restored: 'Air battle restored · press Resume', upgradeChoice: 'Choose an upgrade', firePath: 'Firepower', guardPath: 'Survival', movePath: 'Mobility', savedRound: 'Round saved. You can return to the conversation.',
     library: 'Game library', count: '{count} games', search: 'Search games', all: 'All', flight: 'Flight', action: 'Action', puzzle: 'Puzzle',
     noResults: 'No games found. Try another keyword.', portrait: 'Portrait', landscape: 'Landscape',
     planeDescription: 'Auto fire. Take on the enemy fleet.', tankDescription: 'Break through bricks. Defend the base.', snakeDescription: 'Just one more bite',
     square: 'Square', lives: 'Lives', base: 'Base', intact: 'Intact', destroyed: 'Destroyed', baseLost: 'Base destroyed',
     choose: 'Choose a game', libraryTip: 'Pick a favorite for a little break.', playing: 'Playing',
     minimal: 'Minimal mode', restore: 'Full mode', drag: 'Move window', resize: 'Resize window',
-    demo: 'Try task escort', demoHint: 'Simulated tools and Step supplies · no model requests', liveHint: 'Tools spawn aircraft; completed Steps drop supplies. Play never changes the task.',
+    demo: 'Try task escort', demoHint: 'Simulated tools and Step supplies · no model requests', liveHint: 'Tools spawn targets; completed Steps bring supplies. Play never changes the task.',
     escortEnd: 'Task ended', demoEnd: 'Rehearsal ended', escortStats: 'Tools / Done / Failed / Targets', demoRunning: 'Rehearsal · simulated tool calls',
     n: 'Top', s: 'Bottom', e: 'Right', w: 'Left', nw: 'Top left', ne: 'Top right', sw: 'Bottom left', se: 'Bottom right',
   },
@@ -793,10 +2002,12 @@ function gameOrientation(spec) {
   return spec.height === spec.width ? 'square' : spec.height > spec.width ? 'portrait' : 'landscape'
 }
 
-function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, t }) {
+function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, useSessions = () => undefined, t }) {
   const status = useSessionStatus(snapshot => snapshot.get(sessionId))
   const mission = useProjection('whileplayMission')
   const [open, setOpen] = useState(false)
+  const [expeditionOpen, setExpeditionOpen] = useState(false)
+  const expeditionFrame = useRef(null)
   const [kind, setKind] = useState('plane')
   const [playing, setPlaying] = useState(false)
   const [notice, setNotice] = useState('idle')
@@ -829,9 +2040,35 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
   const missionBinding = useRef({ sessionId, initialized: false })
   const [demoMode, setDemoMode] = useState(false)
   const [escortSummary, setEscortSummary] = useState(null)
+  const [flightStatus, setFlightStatus] = useState('')
+  const saveSession = useRef(sessionId)
+  const lastSave = useRef(-1)
+  const checkpoint = () => {
+    if (game.current.kind !== 'plane') return
+    try { saveFlight(localStorage, saveSession.current, game.current) }
+    catch { setSaveError(true) }
+  }
   const clearInput = () => { input.current.keys.clear(); input.current.pointer = false; input.current.direction = null; input.current.targetX = undefined; input.current.targetY = undefined }
-  const stop = reason => { clearInput(); setPlaying(false); setNotice(reason) }
+  const stop = reason => { clearInput(); setPlaying(false); setNotice(reason); checkpoint() }
   const windowOptions = { minimal, ratio: game.current.width / game.current.height }
+
+  useEffect(() => {
+    saveSession.current = sessionId
+    let restored = null
+    try { restored = loadFlight(localStorage, sessionId) } catch { setSaveError(true) }
+    if (restored) {
+      game.current = restored; setKind('plane'); setScore(restored.score); setOver(restored.over)
+      setDemoMode(restored.escort.demo); setEscortSummary(restored.escort.summary); setNotice('restored')
+      missionBinding.current = { sessionId, initialized: true }
+    } else {
+      game.current = createGame(kind); setScore(0); setOver(false); setDemoMode(false); setEscortSummary(null)
+      missionBinding.current = { sessionId, initialized: false }
+    }
+    setFlightStatus(''); setPlaying(false); clearInput(); lastSave.current = -1
+    const pageHide = () => checkpoint()
+    window.addEventListener('pagehide', pageHide)
+    return () => { checkpoint(); window.removeEventListener('pagehide', pageHide) }
+  }, [sessionId])
 
   useEffect(() => {
     const fit = () => setFrame(current => fitArcadeWindow(current, viewport(), windowOptions))
@@ -841,7 +2078,7 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
   }, [minimal, kind])
 
   useEffect(() => {
-    if (!open || minimal || !window.ResizeObserver) return
+    if (!open || expeditionOpen || minimal || !window.ResizeObserver) return
     const element = arena.current
     const resize = () => {
       const bounds = element.getBoundingClientRect()
@@ -852,7 +2089,7 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
     const observer = new ResizeObserver(resize)
     observer.observe(element); resize()
     return () => observer.disconnect()
-  }, [open, minimal, kind])
+  }, [open, expeditionOpen, minimal, kind])
 
   useEffect(() => {
     try {
@@ -883,11 +2120,13 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
     if (!mission) return
     if (game.current.escort.demo && !status?.running) return
     if (game.current.escort.demo) {
-      game.current.escort = createEscort(); setDemoMode(false)
+      game.current = createGame(kind); setScore(0); setOver(false); setEscortSummary(null); setDemoMode(false)
     }
     syncEscort(game.current, mission, !missionBinding.current.initialized)
     missionBinding.current.initialized = true
     setEscortSummary(game.current.escort.summary)
+    if (game.current.escort.summary) stop('ready')
+    checkpoint()
     if (open && canvas.current) drawGame(canvas.current.getContext('2d'), game.current, canvasPalette(canvas.current))
   }, [sessionId, mission, kind, status?.running])
 
@@ -900,17 +2139,17 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
   }, [])
 
   useEffect(() => {
-    if (!open) return
+    if (!open || expeditionOpen) return
     const ctx = canvas.current.getContext('2d')
     const paint = () => drawGame(ctx, game.current, canvasPalette(canvas.current))
     paint()
     const themeObserver = new MutationObserver(paint)
     themeObserver.observe(document.body, { attributes: true, attributeFilter: ['data-ds-dark-theme', 'style'] })
     return () => themeObserver.disconnect()
-  }, [open, kind])
+  }, [open, expeditionOpen, kind])
 
   useEffect(() => {
-    if (!open) return
+    if (!open || expeditionOpen) return
     const ctx = canvas.current.getContext('2d')
     drawGame(ctx, game.current, canvasPalette(canvas.current))
     if (!playing) return
@@ -918,14 +2157,19 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
     const tick = now => {
       if (cancelled) return
       if (game.current.escort.demo) {
-        syncEscort(game.current, demoMission(game.current.time))
+        syncEscort(game.current, kind === 'plane' ? demoFlightMission(game.current.time) : demoMission(game.current.time))
         game.current.escort.demo = true
-        if (game.current.escort.summary) { setEscortSummary(game.current.escort.summary); stop('paused'); return }
+        if (game.current.escort.summary) { setEscortSummary(game.current.escort.summary); drawGame(ctx, game.current, canvasPalette(canvas.current)); stop('paused'); return }
       }
       if (last !== undefined) stepGame(game.current, input.current, (now - last) / 1000)
       last = now
       drawGame(ctx, game.current, canvasPalette(canvas.current))
       setScore(game.current.score)
+      if (game.current.flight) {
+        const f = game.current.flight
+        setFlightStatus(JSON.stringify([f.wave, f.upgrades, f.choice, f.pending]))
+        if (Math.floor(game.current.time) !== lastSave.current) { lastSave.current = Math.floor(game.current.time); checkpoint() }
+      }
       if (kind === 'tank') setTankLives(game.current.lives)
       const value = game.current.score
       if (value > (scores.current[scoreKey] || 0)) {
@@ -939,25 +2183,47 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
     }
     frame = requestAnimationFrame(tick)
     return () => { cancelled = true; cancelAnimationFrame(frame) }
-  }, [open, playing, kind])
+  }, [open, expeditionOpen, playing, kind])
 
   const reset = next => {
+    if (next !== kind) checkpoint()
     stop('idle'); setKind(next); game.current = createGame(next); setScore(0); setOver(false); setLibraryOpen(false); setTankLives(3)
     setDemoMode(false); setEscortSummary(null)
+    if (next === 'plane' && kind !== 'plane') {
+      try {
+        const restored = loadFlight(localStorage, sessionId)
+        if (restored) {
+          game.current = restored; setScore(restored.score); setOver(restored.over); setDemoMode(restored.escort.demo); setEscortSummary(restored.escort.summary); setNotice('restored')
+          setFlightStatus('restored'); return
+        }
+      } catch { setSaveError(true) }
+    }
     if (latestMission.current) { syncEscort(game.current, latestMission.current, true); setEscortSummary(game.current.escort.summary) }
+    setFlightStatus(''); checkpoint()
     if (canvas.current) drawGame(canvas.current.getContext('2d'), game.current, canvasPalette(canvas.current))
   }
   const canPlay = status?.running !== undefined && !status?.pendingInteraction
   const start = () => {
     if (!canPlay) return
-    if (game.current.over || game.current.escort?.summary) reset(kind)
+    if (game.current.over) reset(kind)
+    if (game.current.escort?.summary) {
+      if (game.current.kind === 'plane') { game.current.escort.summary = null; setEscortSummary(null); game.current.escort.demo = false; setDemoMode(false) }
+      else reset(kind)
+    }
+    if (game.current.kind === 'plane' && game.current.time > 0) game.current.flight.ready = 1.5
     clearInput(); setNotice('idle'); setPlaying(true); canvas.current.focus()
   }
   const startDemo = () => {
     reset(kind)
     game.current = createGame(kind)
-    syncEscort(game.current, demoMission(0), true); game.current.escort.demo = true
+    syncEscort(game.current, kind === 'plane' ? demoFlightMission(0) : demoMission(0), true); game.current.escort.demo = true
+    if (kind === 'plane') game.current.escort.shield = 1
     setDemoMode(true); setPlaying(true); setNotice('idle'); canvas.current?.focus()
+    checkpoint()
+  }
+  const chooseUpgrade = path => {
+    if (!playing || !canPlay || !chooseFlightUpgrade(game.current, path)) return
+    setFlightStatus(JSON.stringify(game.current.flight)); checkpoint(); canvas.current?.focus()
   }
   const close = () => { stop('paused'); setOpen(false) }
   const toggleMinimal = () => {
@@ -994,7 +2260,14 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
   }
   const dragHandle = className => h('button', { className, type: 'button', 'data-drag-handle': '', 'aria-label': t('drag'), title: t('drag'), onPointerDown: event => beginGesture(event), onKeyDown: event => keyboardGeometry(event, 'move'), ...gestureProps }, '⠿')
   const keyDown = event => {
+    if (event.ctrlKey || event.metaKey || event.altKey) return
     if (event.code === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); return }
+    if (kind === 'plane' && ['Digit1', 'Digit2', 'Numpad1', 'Numpad2'].includes(event.code)) {
+      event.preventDefault(); event.stopPropagation()
+      const path = game.current.flight.choice?.options[Number(event.code.slice(-1)) - 1]
+      if (path && !event.repeat) chooseUpgrade(path)
+      return
+    }
     if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(event.code)) return
     event.preventDefault(); event.stopPropagation()
     if (!playing) return
@@ -1017,6 +2290,12 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
   const categories = ['all', ...new Set(GAME_CATALOG.map(item => item.category))]
   const visibleGames = GAME_CATALOG.filter(item => (category === 'all' || item.category === category)
     && `${t(item.id)} ${t(`${item.id}Description`)} ${t(item.category)}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
+  const showExpedition = ['all', 'action'].includes(category) && '小队护送远征 expedition todo 子agent 工具 交付物'.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())
+  const openExpedition = () => {
+    stop('paused'); expeditionFrame.current = frame; setMinimal(false); setExpeditionOpen(true)
+    setFrame(fitArcadeWindow({ x: 80, y: 30, width: Math.min(800, window.innerWidth - 32), height: Math.min(900, window.innerHeight - 48) }, viewport()))
+  }
+  const closeExpedition = () => { setExpeditionOpen(false); if (expeditionFrame.current) setFrame(fitArcadeWindow(expeditionFrame.current, viewport())) }
   const pointerPosition = event => {
     const bounds = event.currentTarget.getBoundingClientRect()
     input.current.targetX = (event.clientX - bounds.left) * game.current.width / bounds.width
@@ -1025,7 +2304,8 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
 
   return h('div', { className: 'dsh-arcade' },
     h('button', { className: 'arcade-launch', type: 'button', 'aria-expanded': open, onClick: () => open ? close() : setOpen(true) }, '◈ ', t('open')),
-    open && h('section', {
+    open && expeditionOpen && h(Expedition, { key: sessionId, sessionId, frame, panelRef: panel, onMove: beginGesture, gestureProps, onClose: closeExpedition, useSessionStatus, useProjection, useSessions }),
+    open && !expeditionOpen && h('section', {
       ref: panel, className: 'arcade-panel', 'aria-label': t('title'), 'data-orientation': orientation, 'data-minimal': minimal,
       style: { left: frame.x, top: frame.y, width: frame.width, height: frame.height },
       onBlur: event => { if (!event.currentTarget.contains(event.relatedTarget)) stop('focus') },
@@ -1036,19 +2316,22 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
         h('button', { className: 'arcade-close', type: 'button', onClick: close, 'aria-label': t('close') }, '×')),
       h('div', { className: 'arcade-body' },
         h('aside', { className: 'arcade-library', 'data-expanded': libraryOpen, 'aria-label': t('library') },
-          h('div', { className: 'arcade-library-heading' }, h('strong', null, t('library')), h('small', null, t('count').replace('{count}', GAME_CATALOG.length))),
+          h('div', { className: 'arcade-library-heading' }, h('strong', null, t('library')), h('small', null, t('count').replace('{count}', GAME_CATALOG.length + 1))),
           h('input', { className: 'arcade-search', type: 'search', value: query, placeholder: t('search'), 'aria-label': t('search'), onChange: event => setQuery(event.target.value) }),
           h('div', { className: 'arcade-filters', role: 'group', 'aria-label': t('choose') }, ...categories.map(item => h('button', { key: item, type: 'button', 'aria-pressed': category === item, onClick: () => setCategory(item) }, t(item)))),
           h('nav', { className: 'arcade-game-list', 'aria-label': t('choose') }, ...visibleGames.map(item => h('button', {
             type: 'button', key: item.id, 'aria-label': t(item.id), 'aria-pressed': item.id === kind, onClick: () => { if (item.id !== kind) reset(item.id); else setLibraryOpen(false) },
           }, gameIcon(item.id, 'arcade-game-icon'), h('span', null, h('strong', null, t(item.id)), h('small', null, t(item.category), ' · ', t(gameOrientation(item)))))),
-          !visibleGames.length && h('p', { className: 'arcade-empty' }, t('noResults'))),
+          showExpedition && h('button', { type: 'button', 'aria-label': '小队护送远征', 'aria-pressed': false, onClick: openExpedition }, h('span', { className: 'exp-library-icon', 'aria-hidden': true }, '⌁'), h('span', null, h('strong', null, '小队护送远征'), h('small', null, '任务联动 · 实时护航'))),
+          !visibleGames.length && !showExpedition && h('p', { className: 'arcade-empty' }, t('noResults'))),
           h('small', { className: 'arcade-library-tip' }, t('libraryTip'))),
         h('main', { className: 'arcade-play' },
           h('div', { className: 'arcade-game-heading' }, h('div', null, h('h3', null, t(kind)), h('p', null, t(`${kind}Description`))), h('span', { className: 'arcade-orientation' }, t(orientation))),
           h('div', { className: 'arcade-scores' }, h('span', null, t('score'), h('strong', null, String(score).padStart(3, '0'))), h('span', null, t('best'), h('strong', null, String(best[scoreKey] || 0).padStart(3, '0')))),
           kind === 'tank' && h('div', { className: 'arcade-tank-hud' }, h('span', null, t('lives'), ' ', tankLives, ' / 3'), h('span', null, t('base'), ' · ', t(game.current.base.destroyed ? 'destroyed' : 'intact'))),
           h('div', { className: 'arcade-escort-info' }, h('small', null, t(demoMode ? 'demoHint' : 'liveHint')), h('button', { type: 'button', onClick: startDemo, disabled: status?.running || !!status?.pendingInteraction || !canPlay }, t('demo'))),
+          kind === 'plane' && game.current.flight?.choice && h('div', { className: 'arcade-upgrades', role: 'group', 'aria-label': t('upgradeChoice') }, h('small', null, t('upgradeChoice')),
+            ...game.current.flight.choice.options.map((path, i) => h('button', { type: 'button', key: path, disabled: !playing || !canPlay, onClick: () => chooseUpgrade(path) }, `${i + 1} · ${t(`${path}Path`)} · ${flightUpgradeName(game.current, path)}`))),
       h('div', { className: 'arcade-arena', ref: arena }, h('div', { className: 'arcade-stage', style: minimal ? { width: '100%', height: '100%' } : stageSize },
         h('canvas', {
           ref: canvas, width: selected.width, height: selected.height, tabIndex: 0, 'aria-label': t('canvas'), onKeyDown: keyDown, onKeyUp: keyUp,
@@ -1059,7 +2342,8 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
         }),
         !playing && h('div', { className: 'arcade-curtain' }, gameIcon(kind, 'arcade-curtain-icon'), h('strong', null, t(over ? kind === 'tank' && game.current.base.destroyed ? 'baseLost' : 'over' : notice === 'idle' ? 'idle' : 'paused')),
           escortSummary && h('div', { className: 'arcade-escort-summary', role: 'status' }, h('strong', null, t(demoMode ? 'demoEnd' : 'escortEnd')), h('small', null, t('escortStats')), h('span', null, `${escortSummary.total} / ${escortSummary.completed} / ${escortSummary.failed} / ${escortSummary.kills}`), h('small', null, `${t('score')} ${escortSummary.score}`)),
-          h('button', { type: 'button', className: 'arcade-primary', disabled: !canPlay, onClick: start }, t(over || escortSummary ? 'restart' : game.current.time ? 'resume' : 'start'))))),
+          kind === 'plane' && escortSummary && h('small', null, t('savedRound')),
+          h('button', { type: 'button', className: 'arcade-primary', disabled: !canPlay, onClick: start }, t(over || (escortSummary && kind !== 'plane') ? 'restart' : game.current.time ? 'resume' : 'start'))))),
       h('p', { className: 'arcade-hint' }, t(`${kind}Hint`)),
       h('div', { className: 'arcade-toolbar' },
         h('div', { className: 'arcade-controls' }, pad('ArrowLeft', 'left'), pad('ArrowUp', 'up'), pad('ArrowDown', 'down'), pad('ArrowRight', 'right'), kind === 'tank' && pad('Space', 'fire')),

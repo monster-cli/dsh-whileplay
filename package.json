@@ -12,6 +12,7 @@
   "files": [
     "index.js",
     "mission.js",
+    "escort-mission.js",
     "client.js",
     "cordis.patch.yml",
     "README.md",

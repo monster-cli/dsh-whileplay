@@ -18,7 +18,7 @@ test('client pauses on completion and attention, preserves rounds and disposes i
   win.localStorage.setItem('dsh-waiting-arcade.best.v1', JSON.stringify({ planeShooter: 20, snake: 30, tankClassic: 100 }))
   const frames = new Map()
   let sequence = 0, component, labels, definition
-  win.HTMLCanvasElement.prototype.getContext = () => new Proxy({}, { get: (target, name) => target[name] ?? (() => {}), set: (target, name, value) => { target[name] = value; return true } })
+  win.HTMLCanvasElement.prototype.getContext = () => new Proxy({}, { get: (target, name) => target[name] ?? (name === 'createLinearGradient' ? (() => ({ addColorStop() {} })) : (() => {})), set: (target, name, value) => { target[name] = value; return true } })
   const globals = { window: win, document: win.document, localStorage: win.localStorage, requestAnimationFrame: fn => { frames.set(++sequence, fn); return sequence }, cancelAnimationFrame: id => frames.delete(id), IS_REACT_ACT_ENVIRONMENT: true }
   win.requestAnimationFrame = globals.requestAnimationFrame
   win.cancelAnimationFrame = globals.cancelAnimationFrame
@@ -26,9 +26,11 @@ test('client pauses on completion and attention, preserves rounds and disposes i
   for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { value, configurable: true, writable: true })
   let snapshot = new Map([['session-a', { running: true }]])
   let projection
+  let expeditionProjections = {}
   const subscribers = new Set(), disposers = []
   const useSessionStatus = selector => selector(React.useSyncExternalStore(fn => { subscribers.add(fn); return () => subscribers.delete(fn) }, () => snapshot))
-  const useProjection = key => { assert.equal(key, 'whileplayMission'); return React.useSyncExternalStore(fn => { subscribers.add(fn); return () => subscribers.delete(fn) }, () => projection) }
+  const useProjection = key => React.useSyncExternalStore(fn => { subscribers.add(fn); return () => subscribers.delete(fn) }, () => key === 'whileplayMission' ? projection : expeditionProjections[key])
+  const projectExpedition = async value => act(async () => { expeditionProjections = value; subscribers.forEach(fn => fn()) })
   const project = async value => act(async () => { projection = value; subscribers.forEach(fn => fn()) })
   const update = async value => act(async () => { snapshot = new Map([['session-a', value]]); subscribers.forEach(fn => fn()) })
   win.__ModuleLoader__ = { load: row => { definition = row.factory(name => { assert.equal(name, 'react'); return React }) } }
@@ -92,11 +94,18 @@ test('client pauses on completion and attention, preserves rounds and disposes i
     win.Math.random = () => 0
     await act(async () => {
       win.document.querySelector('canvas').dispatchEvent(new win.KeyboardEvent('keydown', { code: 'ArrowRight', bubbles: true }))
-      for (let n = 0; n < 620; n++) { const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach(fn => fn(n * 50)) }
+      for (let n = 0; n < 30; n++) { const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach(fn => fn(n * 50)) }
     })
     win.Math.random = originalRandom
-    assert.match(win.document.querySelector('.arcade-escort-summary').textContent, /5 \/ 5 \/ 1/)
-    assert.equal(frames.size, 0)
+    assert.ok(win.document.querySelector('.arcade-upgrades'), 'Step offers a real upgrade choice')
+    await act(async () => win.document.querySelector('canvas').dispatchEvent(new win.KeyboardEvent('keydown', { code: 'Digit1', bubbles: true })))
+    assert.equal(JSON.parse(win.localStorage.getItem('dsh-whileplay.flights.v1')).rows[0].game.flight.upgrades.fire, 1)
+    await click(button('暂停'))
+    const savedTime = JSON.parse(win.localStorage.getItem('dsh-whileplay.flights.v1')).rows[0].game.time
+    await click(button('坦克大战')); await click(button('飞机大战'))
+    assert.equal(win.document.querySelector('canvas').getAttribute('width'), '320')
+    assert.equal(JSON.parse(win.localStorage.getItem('dsh-whileplay.flights.v1')).rows[0].game.time, savedTime)
+    assert.equal(frames.size, 0, 'restored round waits for manual resume')
     await click(button('联动演练'))
     await update({ running: true })
     await project({ turn: 103, seq: 104, running: true, total: 1, completed: 0, failed: 0, calls: [{ id: 'tool-b', name: 'read_file', phase: 'running', seq: 104 }] })
@@ -124,6 +133,39 @@ test('client pauses on completion and attention, preserves rounds and disposes i
     const arrow = new win.KeyboardEvent('keydown', { code: 'ArrowDown', bubbles: true, cancelable: true })
     win.document.querySelector('textarea').dispatchEvent(arrow)
     assert.equal(arrow.defaultPrevented, false)
+    await click(button('小队护送远征'))
+    assert.ok(win.document.querySelector('.exp-action-panel'))
+    assert.equal(win.document.querySelector('canvas').getAttribute('width'), '480')
+    assert.ok(button('当前会话').getAttribute('aria-pressed') === 'true')
+    assert.ok(!win.document.querySelector('.exp-action-sidebar').textContent.includes('番茄钟'))
+    assert.match(win.document.querySelector('.exp-action-sidebar').textContent, /尚未提供 Todo/)
+    await projectExpedition({ title: '真实测试会话', whileplayExpedition: { turn: 103, request: '修复登录页面', cargo: [], endReason: null }, todos: [{ content: '排查登录报错', status: 'in_progress' }] })
+    assert.equal(win.document.querySelector('.exp-mission-title').textContent, '修复登录页面')
+    assert.match(win.document.querySelector('.exp-action-todo').textContent, /排查登录报错/)
+    await click(button('开始任务护航'))
+    await update({ running: true })
+    await update({ running: false })
+    assert.equal(frames.size, 0, 'real task ending freezes live escort')
+    await click(button('联动演练'))
+    assert.equal(win.document.querySelector('.exp-mission-title').textContent, '番茄钟小站')
+    await click(button('开始实时演练'))
+    await act(async () => {
+      win.document.querySelector('canvas').dispatchEvent(new win.KeyboardEvent('keydown', { code: 'KeyD', bubbles: true }))
+      for (let n = 0; n < 30; n++) { const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach(fn => fn(n * 50)) }
+    })
+    await act(async () => win.document.querySelector('canvas').dispatchEvent(new win.KeyboardEvent('keydown', { code: 'KeyQ', bubbles: true })))
+    const actionSave = JSON.parse(win.localStorage.getItem('dsh-whileplay.escort-action.v2:session-a'))
+    assert.ok(actionSave.player.x > 240); assert.equal(actionSave.repair, 0); assert.equal(actionSave.used, 1)
+    await click(button('暂停护航'))
+    assert.match(win.document.querySelector('.exp-action-curtain').textContent, /战场已暂停/)
+    await click(win.document.querySelector('.exp-action-curtain button'))
+    await update({ running: true, pendingInteraction: { key: 'real-approval' } })
+    assert.match(win.document.querySelector('.exp-action-curtain').textContent, /真实会话需要/)
+    assert.ok([...win.document.querySelectorAll('.exp-action-skills button')].every(el => el.disabled))
+    await update({ running: false })
+    await click(win.document.querySelector('[aria-label="返回游戏库"]'))
+    assert.equal(win.document.querySelector('.exp-action-panel'), null)
+    assert.ok(win.document.querySelector('canvas'))
     await act(async () => root.unmount())
     disposers.reverse().forEach(dispose => dispose())
     assert.equal(frames.size, 0)

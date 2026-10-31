@@ -9,10 +9,11 @@ const dictionaries = {
     score: '得分', best: '最高分', paused: '已暂停', over: '本局结束', idle: '随时开始，随时停下',
     working: 'AI 正在工作 · 可以玩一小局', ready: 'AI 已结束运行 · 游戏已暂停，请查看回复',
     attention: 'AI 需要你的操作 · 游戏已暂停', unavailable: '会话状态暂不可用 · 游戏已暂停', switched: '已切换会话 · 游戏已暂停',
-    focus: '离开游戏后已暂停', planeHint: '方向键或拖动移动，自动射击。接住 Step 补给：双发 8 秒、护盾抵挡一次、炸弹清除敌弹并伤害敌机。',
+    focus: '离开游戏后已暂停', planeHint: '方向键或拖动移动，自动射击。Step 带来补给与升级；接住升级胶囊，或按 1 / 2 选择火力、生存、机动路线。',
     snakeHint: '方向键转向，避开边界和自己。工具带来限时果实；Step 补给提供双倍、护盾或减速。', tankHint: '方向键移动，空格射击。工具生成三血精英坦克；Step 补给提供连发、护盾或炸弹。',
     canvas: '游戏画布，点击后可用键盘操作', up: '上', down: '下', left: '左', right: '右', fire: '发射',
-    saveError: '浏览器禁止保存，最高分仅保留在本次打开期间。', resetHint: '切换游戏会开始新的一局。',
+    saveError: '浏览器存储不可用，纪录和存档可能无法保存。', resetHint: '飞机大战按会话保存；切换游戏或刷新后，可继续这一局。',
+    restored: '已恢复飞机存档 · 点击继续', upgradeChoice: '二选一升级', firePath: '火力', guardPath: '生存', movePath: '机动', savedRound: '本局已保存，可先返回会话',
     library: '游戏库', count: '{count} 款游戏', search: '搜索游戏', all: '全部', flight: '飞行', action: '动作', puzzle: '益智',
     noResults: '没有找到游戏，试试其他关键词。', portrait: '竖屏', landscape: '横屏',
     planeDescription: '自动开火，迎战敌机', tankDescription: '穿越砖墙，守卫基地', snakeDescription: '再吃一颗，就一颗',
@@ -29,17 +30,18 @@ const dictionaries = {
     score: 'Score', best: 'Best', paused: 'Paused', over: 'Game over', idle: 'Start anytime. Pause anytime.',
     working: 'AI is working · enjoy a little game', ready: 'AI stopped · game paused, check the reply',
     attention: 'AI needs your input · game paused', unavailable: 'Session status unavailable · game paused', switched: 'Session changed · game paused',
-    focus: 'Game paused while away', planeHint: 'Arrows or drag to move; auto fire. Catch Step supplies: twin shot for 8s, one-hit shield, or a bomb clearing enemy shots and damaging aircraft.',
+    focus: 'Game paused while away', planeHint: 'Arrows or drag to move; auto fire. Steps bring supplies and upgrades. Catch an upgrade capsule or press 1 / 2 for Firepower, Survival or Mobility.',
     snakeHint: 'Arrows to turn; avoid walls and yourself. Tools spawn timed fruit; Steps provide double score, a shield or slow motion.', tankHint: 'Arrows to move, Space to fire. Tools spawn armored tanks; Steps provide rapid fire, a shield or a bomb.',
     canvas: 'Game canvas. Click to use keyboard controls', up: 'Up', down: 'Down', left: 'Left', right: 'Right', fire: 'Fire',
-    saveError: 'Browser storage is blocked. Best scores last only for this visit.', resetHint: 'Switching games starts a fresh round.',
+    saveError: 'Browser storage unavailable. Scores and checkpoints may not be saved.', resetHint: 'Air battle saves per session. Return after switching games or refreshing.',
+    restored: 'Air battle restored · press Resume', upgradeChoice: 'Choose an upgrade', firePath: 'Firepower', guardPath: 'Survival', movePath: 'Mobility', savedRound: 'Round saved. You can return to the conversation.',
     library: 'Game library', count: '{count} games', search: 'Search games', all: 'All', flight: 'Flight', action: 'Action', puzzle: 'Puzzle',
     noResults: 'No games found. Try another keyword.', portrait: 'Portrait', landscape: 'Landscape',
     planeDescription: 'Auto fire. Take on the enemy fleet.', tankDescription: 'Break through bricks. Defend the base.', snakeDescription: 'Just one more bite',
     square: 'Square', lives: 'Lives', base: 'Base', intact: 'Intact', destroyed: 'Destroyed', baseLost: 'Base destroyed',
     choose: 'Choose a game', libraryTip: 'Pick a favorite for a little break.', playing: 'Playing',
     minimal: 'Minimal mode', restore: 'Full mode', drag: 'Move window', resize: 'Resize window',
-    demo: 'Try task escort', demoHint: 'Simulated tools and Step supplies · no model requests', liveHint: 'Tools spawn aircraft; completed Steps drop supplies. Play never changes the task.',
+    demo: 'Try task escort', demoHint: 'Simulated tools and Step supplies · no model requests', liveHint: 'Tools spawn targets; completed Steps bring supplies. Play never changes the task.',
     escortEnd: 'Task ended', demoEnd: 'Rehearsal ended', escortStats: 'Tools / Done / Failed / Targets', demoRunning: 'Rehearsal · simulated tool calls',
     n: 'Top', s: 'Bottom', e: 'Right', w: 'Left', nw: 'Top left', ne: 'Top right', sw: 'Bottom left', se: 'Bottom right',
   },
@@ -63,10 +65,12 @@ function gameOrientation(spec) {
   return spec.height === spec.width ? 'square' : spec.height > spec.width ? 'portrait' : 'landscape'
 }
 
-function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, t }) {
+function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, useSessions = () => undefined, t }) {
   const status = useSessionStatus(snapshot => snapshot.get(sessionId))
   const mission = useProjection('whileplayMission')
   const [open, setOpen] = useState(false)
+  const [expeditionOpen, setExpeditionOpen] = useState(false)
+  const expeditionFrame = useRef(null)
   const [kind, setKind] = useState('plane')
   const [playing, setPlaying] = useState(false)
   const [notice, setNotice] = useState('idle')
@@ -99,9 +103,35 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
   const missionBinding = useRef({ sessionId, initialized: false })
   const [demoMode, setDemoMode] = useState(false)
   const [escortSummary, setEscortSummary] = useState(null)
+  const [flightStatus, setFlightStatus] = useState('')
+  const saveSession = useRef(sessionId)
+  const lastSave = useRef(-1)
+  const checkpoint = () => {
+    if (game.current.kind !== 'plane') return
+    try { saveFlight(localStorage, saveSession.current, game.current) }
+    catch { setSaveError(true) }
+  }
   const clearInput = () => { input.current.keys.clear(); input.current.pointer = false; input.current.direction = null; input.current.targetX = undefined; input.current.targetY = undefined }
-  const stop = reason => { clearInput(); setPlaying(false); setNotice(reason) }
+  const stop = reason => { clearInput(); setPlaying(false); setNotice(reason); checkpoint() }
   const windowOptions = { minimal, ratio: game.current.width / game.current.height }
+
+  useEffect(() => {
+    saveSession.current = sessionId
+    let restored = null
+    try { restored = loadFlight(localStorage, sessionId) } catch { setSaveError(true) }
+    if (restored) {
+      game.current = restored; setKind('plane'); setScore(restored.score); setOver(restored.over)
+      setDemoMode(restored.escort.demo); setEscortSummary(restored.escort.summary); setNotice('restored')
+      missionBinding.current = { sessionId, initialized: true }
+    } else {
+      game.current = createGame(kind); setScore(0); setOver(false); setDemoMode(false); setEscortSummary(null)
+      missionBinding.current = { sessionId, initialized: false }
+    }
+    setFlightStatus(''); setPlaying(false); clearInput(); lastSave.current = -1
+    const pageHide = () => checkpoint()
+    window.addEventListener('pagehide', pageHide)
+    return () => { checkpoint(); window.removeEventListener('pagehide', pageHide) }
+  }, [sessionId])
 
   useEffect(() => {
     const fit = () => setFrame(current => fitArcadeWindow(current, viewport(), windowOptions))
@@ -111,7 +141,7 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
   }, [minimal, kind])
 
   useEffect(() => {
-    if (!open || minimal || !window.ResizeObserver) return
+    if (!open || expeditionOpen || minimal || !window.ResizeObserver) return
     const element = arena.current
     const resize = () => {
       const bounds = element.getBoundingClientRect()
@@ -122,7 +152,7 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
     const observer = new ResizeObserver(resize)
     observer.observe(element); resize()
     return () => observer.disconnect()
-  }, [open, minimal, kind])
+  }, [open, expeditionOpen, minimal, kind])
 
   useEffect(() => {
     try {
@@ -153,11 +183,13 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
     if (!mission) return
     if (game.current.escort.demo && !status?.running) return
     if (game.current.escort.demo) {
-      game.current.escort = createEscort(); setDemoMode(false)
+      game.current = createGame(kind); setScore(0); setOver(false); setEscortSummary(null); setDemoMode(false)
     }
     syncEscort(game.current, mission, !missionBinding.current.initialized)
     missionBinding.current.initialized = true
     setEscortSummary(game.current.escort.summary)
+    if (game.current.escort.summary) stop('ready')
+    checkpoint()
     if (open && canvas.current) drawGame(canvas.current.getContext('2d'), game.current, canvasPalette(canvas.current))
   }, [sessionId, mission, kind, status?.running])
 
@@ -170,17 +202,17 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
   }, [])
 
   useEffect(() => {
-    if (!open) return
+    if (!open || expeditionOpen) return
     const ctx = canvas.current.getContext('2d')
     const paint = () => drawGame(ctx, game.current, canvasPalette(canvas.current))
     paint()
     const themeObserver = new MutationObserver(paint)
     themeObserver.observe(document.body, { attributes: true, attributeFilter: ['data-ds-dark-theme', 'style'] })
     return () => themeObserver.disconnect()
-  }, [open, kind])
+  }, [open, expeditionOpen, kind])
 
   useEffect(() => {
-    if (!open) return
+    if (!open || expeditionOpen) return
     const ctx = canvas.current.getContext('2d')
     drawGame(ctx, game.current, canvasPalette(canvas.current))
     if (!playing) return
@@ -188,14 +220,19 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
     const tick = now => {
       if (cancelled) return
       if (game.current.escort.demo) {
-        syncEscort(game.current, demoMission(game.current.time))
+        syncEscort(game.current, kind === 'plane' ? demoFlightMission(game.current.time) : demoMission(game.current.time))
         game.current.escort.demo = true
-        if (game.current.escort.summary) { setEscortSummary(game.current.escort.summary); stop('paused'); return }
+        if (game.current.escort.summary) { setEscortSummary(game.current.escort.summary); drawGame(ctx, game.current, canvasPalette(canvas.current)); stop('paused'); return }
       }
       if (last !== undefined) stepGame(game.current, input.current, (now - last) / 1000)
       last = now
       drawGame(ctx, game.current, canvasPalette(canvas.current))
       setScore(game.current.score)
+      if (game.current.flight) {
+        const f = game.current.flight
+        setFlightStatus(JSON.stringify([f.wave, f.upgrades, f.choice, f.pending]))
+        if (Math.floor(game.current.time) !== lastSave.current) { lastSave.current = Math.floor(game.current.time); checkpoint() }
+      }
       if (kind === 'tank') setTankLives(game.current.lives)
       const value = game.current.score
       if (value > (scores.current[scoreKey] || 0)) {
@@ -209,25 +246,47 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
     }
     frame = requestAnimationFrame(tick)
     return () => { cancelled = true; cancelAnimationFrame(frame) }
-  }, [open, playing, kind])
+  }, [open, expeditionOpen, playing, kind])
 
   const reset = next => {
+    if (next !== kind) checkpoint()
     stop('idle'); setKind(next); game.current = createGame(next); setScore(0); setOver(false); setLibraryOpen(false); setTankLives(3)
     setDemoMode(false); setEscortSummary(null)
+    if (next === 'plane' && kind !== 'plane') {
+      try {
+        const restored = loadFlight(localStorage, sessionId)
+        if (restored) {
+          game.current = restored; setScore(restored.score); setOver(restored.over); setDemoMode(restored.escort.demo); setEscortSummary(restored.escort.summary); setNotice('restored')
+          setFlightStatus('restored'); return
+        }
+      } catch { setSaveError(true) }
+    }
     if (latestMission.current) { syncEscort(game.current, latestMission.current, true); setEscortSummary(game.current.escort.summary) }
+    setFlightStatus(''); checkpoint()
     if (canvas.current) drawGame(canvas.current.getContext('2d'), game.current, canvasPalette(canvas.current))
   }
   const canPlay = status?.running !== undefined && !status?.pendingInteraction
   const start = () => {
     if (!canPlay) return
-    if (game.current.over || game.current.escort?.summary) reset(kind)
+    if (game.current.over) reset(kind)
+    if (game.current.escort?.summary) {
+      if (game.current.kind === 'plane') { game.current.escort.summary = null; setEscortSummary(null); game.current.escort.demo = false; setDemoMode(false) }
+      else reset(kind)
+    }
+    if (game.current.kind === 'plane' && game.current.time > 0) game.current.flight.ready = 1.5
     clearInput(); setNotice('idle'); setPlaying(true); canvas.current.focus()
   }
   const startDemo = () => {
     reset(kind)
     game.current = createGame(kind)
-    syncEscort(game.current, demoMission(0), true); game.current.escort.demo = true
+    syncEscort(game.current, kind === 'plane' ? demoFlightMission(0) : demoMission(0), true); game.current.escort.demo = true
+    if (kind === 'plane') game.current.escort.shield = 1
     setDemoMode(true); setPlaying(true); setNotice('idle'); canvas.current?.focus()
+    checkpoint()
+  }
+  const chooseUpgrade = path => {
+    if (!playing || !canPlay || !chooseFlightUpgrade(game.current, path)) return
+    setFlightStatus(JSON.stringify(game.current.flight)); checkpoint(); canvas.current?.focus()
   }
   const close = () => { stop('paused'); setOpen(false) }
   const toggleMinimal = () => {
@@ -264,7 +323,14 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
   }
   const dragHandle = className => h('button', { className, type: 'button', 'data-drag-handle': '', 'aria-label': t('drag'), title: t('drag'), onPointerDown: event => beginGesture(event), onKeyDown: event => keyboardGeometry(event, 'move'), ...gestureProps }, '⠿')
   const keyDown = event => {
+    if (event.ctrlKey || event.metaKey || event.altKey) return
     if (event.code === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); return }
+    if (kind === 'plane' && ['Digit1', 'Digit2', 'Numpad1', 'Numpad2'].includes(event.code)) {
+      event.preventDefault(); event.stopPropagation()
+      const path = game.current.flight.choice?.options[Number(event.code.slice(-1)) - 1]
+      if (path && !event.repeat) chooseUpgrade(path)
+      return
+    }
     if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(event.code)) return
     event.preventDefault(); event.stopPropagation()
     if (!playing) return
@@ -287,6 +353,12 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
   const categories = ['all', ...new Set(GAME_CATALOG.map(item => item.category))]
   const visibleGames = GAME_CATALOG.filter(item => (category === 'all' || item.category === category)
     && `${t(item.id)} ${t(`${item.id}Description`)} ${t(item.category)}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
+  const showExpedition = ['all', 'action'].includes(category) && '小队护送远征 expedition todo 子agent 工具 交付物'.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())
+  const openExpedition = () => {
+    stop('paused'); expeditionFrame.current = frame; setMinimal(false); setExpeditionOpen(true)
+    setFrame(fitArcadeWindow({ x: 80, y: 30, width: Math.min(800, window.innerWidth - 32), height: Math.min(900, window.innerHeight - 48) }, viewport()))
+  }
+  const closeExpedition = () => { setExpeditionOpen(false); if (expeditionFrame.current) setFrame(fitArcadeWindow(expeditionFrame.current, viewport())) }
   const pointerPosition = event => {
     const bounds = event.currentTarget.getBoundingClientRect()
     input.current.targetX = (event.clientX - bounds.left) * game.current.width / bounds.width
@@ -295,7 +367,8 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
 
   return h('div', { className: 'dsh-arcade' },
     h('button', { className: 'arcade-launch', type: 'button', 'aria-expanded': open, onClick: () => open ? close() : setOpen(true) }, '◈ ', t('open')),
-    open && h('section', {
+    open && expeditionOpen && h(Expedition, { key: sessionId, sessionId, frame, panelRef: panel, onMove: beginGesture, gestureProps, onClose: closeExpedition, useSessionStatus, useProjection, useSessions }),
+    open && !expeditionOpen && h('section', {
       ref: panel, className: 'arcade-panel', 'aria-label': t('title'), 'data-orientation': orientation, 'data-minimal': minimal,
       style: { left: frame.x, top: frame.y, width: frame.width, height: frame.height },
       onBlur: event => { if (!event.currentTarget.contains(event.relatedTarget)) stop('focus') },
@@ -306,19 +379,22 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
         h('button', { className: 'arcade-close', type: 'button', onClick: close, 'aria-label': t('close') }, '×')),
       h('div', { className: 'arcade-body' },
         h('aside', { className: 'arcade-library', 'data-expanded': libraryOpen, 'aria-label': t('library') },
-          h('div', { className: 'arcade-library-heading' }, h('strong', null, t('library')), h('small', null, t('count').replace('{count}', GAME_CATALOG.length))),
+          h('div', { className: 'arcade-library-heading' }, h('strong', null, t('library')), h('small', null, t('count').replace('{count}', GAME_CATALOG.length + 1))),
           h('input', { className: 'arcade-search', type: 'search', value: query, placeholder: t('search'), 'aria-label': t('search'), onChange: event => setQuery(event.target.value) }),
           h('div', { className: 'arcade-filters', role: 'group', 'aria-label': t('choose') }, ...categories.map(item => h('button', { key: item, type: 'button', 'aria-pressed': category === item, onClick: () => setCategory(item) }, t(item)))),
           h('nav', { className: 'arcade-game-list', 'aria-label': t('choose') }, ...visibleGames.map(item => h('button', {
             type: 'button', key: item.id, 'aria-label': t(item.id), 'aria-pressed': item.id === kind, onClick: () => { if (item.id !== kind) reset(item.id); else setLibraryOpen(false) },
           }, gameIcon(item.id, 'arcade-game-icon'), h('span', null, h('strong', null, t(item.id)), h('small', null, t(item.category), ' · ', t(gameOrientation(item)))))),
-          !visibleGames.length && h('p', { className: 'arcade-empty' }, t('noResults'))),
+          showExpedition && h('button', { type: 'button', 'aria-label': '小队护送远征', 'aria-pressed': false, onClick: openExpedition }, h('span', { className: 'exp-library-icon', 'aria-hidden': true }, '⌁'), h('span', null, h('strong', null, '小队护送远征'), h('small', null, '任务联动 · 实时护航'))),
+          !visibleGames.length && !showExpedition && h('p', { className: 'arcade-empty' }, t('noResults'))),
           h('small', { className: 'arcade-library-tip' }, t('libraryTip'))),
         h('main', { className: 'arcade-play' },
           h('div', { className: 'arcade-game-heading' }, h('div', null, h('h3', null, t(kind)), h('p', null, t(`${kind}Description`))), h('span', { className: 'arcade-orientation' }, t(orientation))),
           h('div', { className: 'arcade-scores' }, h('span', null, t('score'), h('strong', null, String(score).padStart(3, '0'))), h('span', null, t('best'), h('strong', null, String(best[scoreKey] || 0).padStart(3, '0')))),
           kind === 'tank' && h('div', { className: 'arcade-tank-hud' }, h('span', null, t('lives'), ' ', tankLives, ' / 3'), h('span', null, t('base'), ' · ', t(game.current.base.destroyed ? 'destroyed' : 'intact'))),
           h('div', { className: 'arcade-escort-info' }, h('small', null, t(demoMode ? 'demoHint' : 'liveHint')), h('button', { type: 'button', onClick: startDemo, disabled: status?.running || !!status?.pendingInteraction || !canPlay }, t('demo'))),
+          kind === 'plane' && game.current.flight?.choice && h('div', { className: 'arcade-upgrades', role: 'group', 'aria-label': t('upgradeChoice') }, h('small', null, t('upgradeChoice')),
+            ...game.current.flight.choice.options.map((path, i) => h('button', { type: 'button', key: path, disabled: !playing || !canPlay, onClick: () => chooseUpgrade(path) }, `${i + 1} · ${t(`${path}Path`)} · ${flightUpgradeName(game.current, path)}`))),
       h('div', { className: 'arcade-arena', ref: arena }, h('div', { className: 'arcade-stage', style: minimal ? { width: '100%', height: '100%' } : stageSize },
         h('canvas', {
           ref: canvas, width: selected.width, height: selected.height, tabIndex: 0, 'aria-label': t('canvas'), onKeyDown: keyDown, onKeyUp: keyUp,
@@ -329,7 +405,8 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
         }),
         !playing && h('div', { className: 'arcade-curtain' }, gameIcon(kind, 'arcade-curtain-icon'), h('strong', null, t(over ? kind === 'tank' && game.current.base.destroyed ? 'baseLost' : 'over' : notice === 'idle' ? 'idle' : 'paused')),
           escortSummary && h('div', { className: 'arcade-escort-summary', role: 'status' }, h('strong', null, t(demoMode ? 'demoEnd' : 'escortEnd')), h('small', null, t('escortStats')), h('span', null, `${escortSummary.total} / ${escortSummary.completed} / ${escortSummary.failed} / ${escortSummary.kills}`), h('small', null, `${t('score')} ${escortSummary.score}`)),
-          h('button', { type: 'button', className: 'arcade-primary', disabled: !canPlay, onClick: start }, t(over || escortSummary ? 'restart' : game.current.time ? 'resume' : 'start'))))),
+          kind === 'plane' && escortSummary && h('small', null, t('savedRound')),
+          h('button', { type: 'button', className: 'arcade-primary', disabled: !canPlay, onClick: start }, t(over || (escortSummary && kind !== 'plane') ? 'restart' : game.current.time ? 'resume' : 'start'))))),
       h('p', { className: 'arcade-hint' }, t(`${kind}Hint`)),
       h('div', { className: 'arcade-toolbar' },
         h('div', { className: 'arcade-controls' }, pad('ArrowLeft', 'left'), pad('ArrowUp', 'up'), pad('ArrowDown', 'down'), pad('ArrowRight', 'right'), kind === 'tank' && pad('Space', 'fire')),
