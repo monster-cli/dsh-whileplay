@@ -33,29 +33,12 @@ Whileplay 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness
 
 需要已安装的 DeepSeek Harness Web profile，以及 Node.js `^22.19.0 || >=24.0.0` 和 npm。当前版本已在 Harness `0.2.1-alpha.4` 上验证，其他宿主版本尚未验证。
 
-### 安装当前源码版
-
-本页介绍当前 `main` 分支的功能。**小队护送远征、飞机成长路线和会话存档尚未包含在 v0.2.0 Release 中**，体验这些功能请从源码打包：
-
-```sh
-git clone https://github.com/monster-cli/dsh-whileplay.git
-cd dsh-whileplay
-npm ci
-npm pack
-dsh plugin --profile web add ./dsh-whileplay-0.2.0.tgz
-dsh web
-```
-
-源码包当前仍使用 `0.2.0` 包版本号；以本地 `npm pack` 生成的文件安装。已有 Web 服务运行时，安装后重启。
-
-### 安装已发布版本
-
-**1. 下载插件。** [v0.2.0 安装包](https://github.com/monster-cli/dsh-whileplay/releases/download/v0.2.0/dsh-whileplay-0.2.0.tgz) 提供三款经典游戏及工具、Step 联动。
+**1. 下载插件。** [v0.3.0 安装包](https://github.com/monster-cli/dsh-whileplay/releases/download/v0.3.0/dsh-whileplay-0.3.0.tgz) 包含小队护送远征、三款经典游戏、真实任务联动，以及飞机成长路线和会话存档。
 
 **2. 安装并启动。** 在安装包所在目录执行：
 
 ```sh
-dsh plugin --profile web add ./dsh-whileplay-0.2.0.tgz
+dsh plugin --profile web add ./dsh-whileplay-0.3.0.tgz
 dsh web
 ```
 
@@ -65,7 +48,7 @@ dsh web
 <summary>没有全局 dsh 命令？使用 npx</summary>
 
 ```sh
-npx @deepseek-ai/dsh plugin --profile web add ./dsh-whileplay-0.2.0.tgz
+npx @deepseek-ai/dsh plugin --profile web add ./dsh-whileplay-0.3.0.tgz
 npx @deepseek-ai/dsh web
 ```
 

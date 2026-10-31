@@ -19,10 +19,10 @@ npm ci
 npm pack
 ```
 
-`npm pack` 会自动构建并生成 `dsh-whileplay-0.2.0.tgz`。安装后重启 Web profile：
+`npm pack` 会自动构建并生成 `dsh-whileplay-0.3.0.tgz`。安装后重启 Web profile：
 
 ```sh
-dsh plugin --profile web add ./dsh-whileplay-0.2.0.tgz
+dsh plugin --profile web add ./dsh-whileplay-0.3.0.tgz
 dsh web
 ```
 
