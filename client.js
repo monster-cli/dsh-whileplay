@@ -5332,9 +5332,250 @@ class Chess {
 
 return Chess
 })()
+/**
+ * Xiangqi (Chinese chess) rules engine.
+ * Board is 9 files × 10 ranks stored as a flat array of 90 points.
+ * x: 0–8 left to right from Red's view, y: 0–9 from Black's back rank (top) to Red's (bottom).
+ * Red moves first. Piece: { color: 'r' | 'b', type: 'k' | 'a' | 'e' | 'n' | 'r' | 'c' | 'p' }.
+ * Simplification: repetition / long-check ruling is not enforced, so games only end by
+ * checkmate or stalemate (both are a loss for the side to move, per xiangqi rules).
+ */
+const XIANGQI_FILES = 9
+const XIANGQI_RANKS = 10
+const RED = 'r'
+const BLACK = 'b'
+const BACK_RANK = ['r', 'n', 'e', 'a', 'k', 'a', 'e', 'n', 'r']
+
+function createXiangqi() {
+  const board = Array(XIANGQI_FILES * XIANGQI_RANKS).fill(null)
+  const place = (x, y, color, type) => { board[y * XIANGQI_FILES + x] = { color, type } }
+  BACK_RANK.forEach((type, x) => { place(x, 0, BLACK, type); place(x, 9, RED, type) })
+  for (const x of [1, 7]) { place(x, 2, BLACK, 'c'); place(x, 7, RED, 'c') }
+  for (const x of [0, 2, 4, 6, 8]) { place(x, 3, BLACK, 'p'); place(x, 6, RED, 'p') }
+  return { board, turn: RED, history: [] }
+}
+
+/** Strictly-in-between piece count for two points on one line, or -1 when not aligned. */
+function piecesBetween(board, from, to) {
+  const fx = from % XIANGQI_FILES, fy = Math.floor(from / XIANGQI_FILES)
+  const tx = to % XIANGQI_FILES, ty = Math.floor(to / XIANGQI_FILES)
+  if (fx !== tx && fy !== ty) return -1
+  const dx = Math.sign(tx - fx), dy = Math.sign(ty - fy)
+  let count = 0
+  for (let x = fx + dx, y = fy + dy; x !== tx || y !== ty; x += dx, y += dy) {
+    if (board[y * XIANGQI_FILES + x]) count++
+  }
+  return count
+}
+
+function generalAt(board, color) {
+  for (let at = 0; at < board.length; at++) {
+    const piece = board[at]
+    if (piece && piece.color === color && piece.type === 'k') return at
+  }
+  return -1
+}
+
+/** Whether the general of `color` is attacked (including the flying-general rule). */
+function xiangqiAttacked(board, color) {
+  const g = generalAt(board, color)
+  if (g < 0) return true
+  const gx = g % XIANGQI_FILES, gy = Math.floor(g / XIANGQI_FILES)
+  for (let at = 0; at < board.length; at++) {
+    const piece = board[at]
+    if (!piece || piece.color === color) continue
+    const x = at % XIANGQI_FILES, y = Math.floor(at / XIANGQI_FILES)
+    if (piece.type === 'r' || piece.type === 'c') {
+      if (x !== gx && y !== gy) continue
+      const between = piecesBetween(board, at, g)
+      if (piece.type === 'r' ? between === 0 : between === 1) return true
+    } else if (piece.type === 'n') {
+      const dx = gx - x, dy = gy - y, ax = Math.abs(dx), ay = Math.abs(dy)
+      if ((ax === 2 && ay === 1) || (ax === 1 && ay === 2)) {
+        const leg = ax === 2 ? y * XIANGQI_FILES + x + Math.sign(dx) : (y + Math.sign(dy)) * XIANGQI_FILES + x
+        if (!board[leg]) return true
+      }
+    } else if (piece.type === 'p') {
+      const forward = piece.color === RED ? -1 : 1
+      if (x === gx && y + forward === gy) return true
+      const crossed = piece.color === RED ? y <= 4 : y >= 5
+      if (crossed && y === gy && Math.abs(x - gx) === 1) return true
+    } else if (piece.type === 'k') {
+      if (x === gx && piecesBetween(board, at, g) === 0) return true
+    }
+  }
+  return false
+}
+
+const inPalace = (x, y, color) => x >= 3 && x <= 5 && (color === RED ? y >= 7 && y <= 9 : y >= 0 && y <= 2)
+const ownSide = (y, color) => color === RED ? y >= 5 : y <= 4
+
+/** Pseudo-legal destinations for the piece at `from`; king safety is filtered later. */
+function pseudoMoves(board, from) {
+  const piece = board[from]
+  if (!piece) return []
+  const x = from % XIANGQI_FILES, y = Math.floor(from / XIANGQI_FILES), out = []
+  const push = (tx, ty) => {
+    if (tx < 0 || tx >= XIANGQI_FILES || ty < 0 || ty >= XIANGQI_RANKS) return
+    const target = board[ty * XIANGQI_FILES + tx]
+    if (!target || target.color !== piece.color) out.push(ty * XIANGQI_FILES + tx)
+  }
+  if (piece.type === 'k') {
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      if (inPalace(x + dx, y + dy, piece.color)) push(x + dx, y + dy)
+    }
+    // Flying general: capture the opposing general down an open file.
+    const dir = piece.color === RED ? -1 : 1
+    for (let ty = y + dir; ty >= 0 && ty < XIANGQI_RANKS; ty += dir) {
+      const target = board[ty * XIANGQI_FILES + x]
+      if (target) { if (target.type === 'k') out.push(ty * XIANGQI_FILES + x); break }
+    }
+  } else if (piece.type === 'a') {
+    for (const [dx, dy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+      if (inPalace(x + dx, y + dy, piece.color)) push(x + dx, y + dy)
+    }
+  } else if (piece.type === 'e') {
+    for (const [dx, dy] of [[2, 2], [2, -2], [-2, 2], [-2, -2]]) {
+      const tx = x + dx, ty = y + dy
+      if (tx < 0 || tx >= XIANGQI_FILES || ty < 0 || ty >= XIANGQI_RANKS || !ownSide(ty, piece.color)) continue
+      if (!board[(y + dy / 2) * XIANGQI_FILES + x + dx / 2]) push(tx, ty)
+    }
+  } else if (piece.type === 'n') {
+    for (const [dx, dy, lx, ly] of [[1, 2, 0, 1], [-1, 2, 0, 1], [1, -2, 0, -1], [-1, -2, 0, -1], [2, 1, 1, 0], [2, -1, 1, 0], [-2, 1, -1, 0], [-2, -1, -1, 0]]) {
+      if (!board[(y + ly) * XIANGQI_FILES + x + lx]) push(x + dx, y + dy)
+    }
+  } else if (piece.type === 'r') {
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      for (let tx = x + dx, ty = y + dy; tx >= 0 && tx < XIANGQI_FILES && ty >= 0 && ty < XIANGQI_RANKS; tx += dx, ty += dy) {
+        const target = board[ty * XIANGQI_FILES + tx]
+        if (!target) { out.push(ty * XIANGQI_FILES + tx); continue }
+        if (target.color !== piece.color) out.push(ty * XIANGQI_FILES + tx)
+        break
+      }
+    }
+  } else if (piece.type === 'c') {
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      let screen = false
+      for (let tx = x + dx, ty = y + dy; tx >= 0 && tx < XIANGQI_FILES && ty >= 0 && ty < XIANGQI_RANKS; tx += dx, ty += dy) {
+        const target = board[ty * XIANGQI_FILES + tx]
+        if (!screen) {
+          if (!target) out.push(ty * XIANGQI_FILES + tx)
+          else screen = true
+        } else if (target) {
+          if (target.color !== piece.color) out.push(ty * XIANGQI_FILES + tx)
+          break
+        }
+      }
+    }
+  } else if (piece.type === 'p') {
+    const forward = piece.color === RED ? -1 : 1
+    push(x, y + forward)
+    if (!ownSide(y, piece.color)) { push(x - 1, y); push(x + 1, y) }
+  }
+  return out
+}
+
+function applyMove(state, move) {
+  state.board[move.to] = state.board[move.from]
+  state.board[move.from] = null
+  state.history.push(move)
+  state.turn = state.turn === RED ? BLACK : RED
+}
+
+/** Legal moves for the piece at `from`, filtered for king safety. */
+function xiangqiMovesFrom(state, from) {
+  const piece = state.board[from]
+  if (!piece || piece.color !== state.turn) return []
+  return pseudoMoves(state.board, from).filter(to => {
+    const captured = state.board[to]
+    state.board[to] = piece
+    state.board[from] = null
+    const safe = !xiangqiAttacked(state.board, piece.color)
+    state.board[from] = piece
+    state.board[to] = captured
+    return safe
+  }).map(to => ({ from, to, captured: state.board[to] }))
+}
+
+/** All legal moves for the side to move. */
+function xiangqiMoves(state) {
+  const moves = []
+  for (let from = 0; from < state.board.length; from++) {
+    const piece = state.board[from]
+    if (piece && piece.color === state.turn) moves.push(...xiangqiMovesFrom(state, from))
+  }
+  return moves
+}
+
+/** Play a move; returns true when legal. */
+function xiangqiMove(state, from, to) {
+  const move = xiangqiMovesFrom(state, from).find(candidate => candidate.to === to)
+  if (!move) return false
+  applyMove(state, move)
+  return true
+}
+
+function xiangqiUndo(state) {
+  const last = state.history.pop()
+  if (!last) return false
+  state.board[last.from] = state.board[last.to]
+  state.board[last.to] = last.captured
+  state.turn = state.turn === RED ? BLACK : RED
+  return true
+}
+
+/** 'redWin' | 'blackWin' when the side to move has no legal move, else null. */
+function xiangqiResult(state) {
+  for (let from = 0; from < state.board.length; from++) {
+    const piece = state.board[from]
+    if (piece && piece.color === state.turn && xiangqiMovesFrom(state, from).length) return null
+  }
+  return state.turn === RED ? 'blackWin' : 'redWin'
+}
+
+const XIANGQI_VALUE = { k: 0, r: 600, c: 300, n: 270, e: 25, a: 25, p: 60 }
+
+/** Bounded local search, same shape as chooseChess: read-only, 1 ply + opponent replies. */
+function chooseXiangqi(state, maxMs = 220) {
+  if (xiangqiResult(state)) return null
+  const end = Date.now() + maxMs, color = state.turn
+  const evaluate = () => {
+    let value = 0
+    state.board.forEach((piece, at) => {
+      if (!piece) return
+      const x = at % XIANGQI_FILES, y = Math.floor(at / XIANGQI_FILES)
+      const crossed = piece.type === 'p' && !ownSide(y, piece.color) ? 30 : 0
+      const central = (4 - Math.abs(x - 4)) * (piece.type === 'n' || piece.type === 'c' ? 3 : 1)
+      value += (piece.color === color ? 1 : -1) * (XIANGQI_VALUE[piece.type] + crossed + central)
+    })
+    return value
+  }
+  const moves = xiangqiMoves(state).sort((a, b) => (XIANGQI_VALUE[b.captured?.type] || 0) - (XIANGQI_VALUE[a.captured?.type] || 0))
+  let best = moves[0], bestValue = -Infinity
+  for (const move of moves) {
+    applyMove(state, move)
+    let value = evaluate(), complete = true
+    if (xiangqiResult(state)) value = 100000
+    else {
+      value = Infinity
+      for (const reply of xiangqiMoves(state)) {
+        applyMove(state, reply)
+        value = Math.min(value, xiangqiResult(state) ? -100000 : evaluate())
+        xiangqiUndo(state)
+        if (value <= bestValue) break
+        if (Date.now() > end) { complete = false; break }
+      }
+    }
+    xiangqiUndo(state)
+    if (complete && value > bestValue) { bestValue = value; best = move }
+    if (Date.now() > end) break
+  }
+  return best ? { from: best.from, to: best.to } : null
+}
+
 
 function createBoardGame(kind, mode = 'computer') {
-  return { kind, mode, chess: kind === 'chess' ? new BoardChess() : null, cells: Array(225).fill(0), moves: [], winner: 0, line: [] }
+  return { kind, mode, chess: kind === 'chess' ? new BoardChess() : null, xiangqi: kind === 'xiangqi' ? createXiangqi() : null, cells: Array(225).fill(0), moves: [], winner: 0, line: [] }
 }
 function gomokuLine(cells, at, player) {
   const x = at % 15, y = Math.floor(at / 15)
@@ -5356,17 +5597,23 @@ function playGomoku(g, at) {
   if (g.line.length) g.winner = player
   return true
 }
+function playXiangqi(g, from, to) {
+  if (boardResult(g) || !Number.isInteger(from) || !Number.isInteger(to)) return false
+  return xiangqiMove(g.xiangqi, from, to)
+}
 function undoBoard(g) {
-  const count = g.kind === 'chess' ? g.chess.history().length : g.moves.length
+  const count = g.kind === 'chess' ? g.chess.history().length : g.kind === 'xiangqi' ? g.xiangqi.history.length : g.moves.length
   const n = g.mode === 'computer' && count % 2 === 0 ? 2 : 1
   for (let i = 0; i < n; i++) {
     if (g.kind === 'chess') g.chess.undo()
+    else if (g.kind === 'xiangqi') xiangqiUndo(g.xiangqi)
     else if (g.moves.length) g.cells[g.moves.pop()] = 0
   }
   g.winner = 0; g.line = []
 }
 function boardResult(g) {
   if (g.kind === 'gomoku') return g.winner ? (g.winner === 1 ? 'blackWin' : 'whiteWin') : g.moves.length === 225 ? 'draw' : null
+  if (g.kind === 'xiangqi') return xiangqiResult(g.xiangqi)
   if (g.chess.isCheckmate()) return g.chess.turn() === 'w' ? 'blackWin' : 'whiteWin'
   if (g.chess.isStalemate()) return 'stalemate'
   if (g.chess.isDraw()) return 'draw'
@@ -5439,23 +5686,49 @@ function chooseChess(chess, maxMs = 220) {
   return { from: best.from, to: best.to, ...(best.promotion ? { promotion: best.promotion } : {}) }
 }
 function serializeBoard(g) {
-  return JSON.stringify({ version: 1, kind: g.kind, mode: g.mode, moves: g.kind === 'chess' ? g.chess.history() : g.moves })
+  return JSON.stringify({ version: 1, kind: g.kind, mode: g.mode, moves: g.kind === 'chess' ? g.chess.history() : g.kind === 'xiangqi' ? g.xiangqi.history.map(move => move.from * 100 + move.to) : g.moves })
 }
 function restoreBoard(raw, kind) {
   try {
     if (!raw || raw.length > 40000) return null
     const data = JSON.parse(raw)
-    if (data.version !== 1 || data.kind !== kind || !['computer', 'local'].includes(data.mode) || !Array.isArray(data.moves) || data.moves.length > (kind === 'chess' ? 1200 : 225)) return null
+    const limit = kind === 'chess' ? 1200 : kind === 'xiangqi' ? 600 : 225
+    if (data.version !== 1 || data.kind !== kind || !['computer', 'local'].includes(data.mode) || !Array.isArray(data.moves) || data.moves.length > limit) return null
     const g = createBoardGame(kind, data.mode)
     for (const move of data.moves) {
       if (boardResult(g)) return null
       if (kind === 'chess') { if (typeof move !== 'string' || move.length > 12 || !g.chess.move(move)) return null }
+      else if (kind === 'xiangqi') {
+        if (!Number.isInteger(move) || move < 0 || move >= 9000) return null
+        const from = Math.floor(move / 100), to = move % 100
+        if (to >= 90 || !playXiangqi(g, from, to)) return null
+      }
       else if (!playGomoku(g, move)) return null
     }
     return g
   } catch { return null }
 }
 
+const XQ_GLYPH = { r: { k: '帥', a: '仕', e: '相', n: '馬', r: '車', c: '炮', p: '兵' }, b: { k: '將', a: '士', e: '象', n: '馬', r: '車', c: '砲', p: '卒' } }
+const xqPoint = at => `${'abcdefghi'[at % 9]}${10 - Math.floor(at / 9)}`
+/** Board lines, palace diagonals, river and star marks as an aligned SVG underlay. */
+function xiangqiBoardLines() {
+  const lines = []
+  for (let y = 0; y < 10; y++) lines.push(`M.5 ${y + .5}h8`)
+  for (const x of [0, 8]) lines.push(`M${x + .5} .5v9`)
+  for (let x = 1; x < 8; x++) lines.push(`M${x + .5} .5v4M${x + .5} 5.5v4`)
+  lines.push('M3.5 .5l2 2M5.5 .5l-2 2M3.5 7.5l2 2M5.5 7.5l-2 2')
+  const stars = []
+  for (const [x, y] of [[1, 2], [7, 2], [0, 3], [2, 3], [4, 3], [6, 3], [8, 3], [1, 7], [7, 7], [0, 6], [2, 6], [4, 6], [6, 6], [8, 6]]) {
+    for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
+      if (x + sx < 0 || x + sx > 8) continue
+      stars.push(`M${x + .5 + sx * .07} ${y + .5 + sy * .23}v${-sy * .16}h${sx * .16}`)
+    }
+  }
+  return h('svg', { className: 'xiangqi-lines', viewBox: '0 0 9 10', preserveAspectRatio: 'none', 'aria-hidden': true },
+    h('path', { d: lines.join('') }), h('path', { className: 'xiangqi-stars', d: stars.join('') }),
+    h('text', { x: 2.5, y: 5 }, '楚河'), h('text', { x: 6.5, y: 5 }, '漢界'))
+}
 function BoardGames({ kind, sessionId, frame, panelRef, onMove, gestureProps, onClose, useSessionStatus, t }) {
   const en = t('title') === 'Whileplay', text = (zh, english) => en ? english : zh
   const key = `dsh-whileplay.board.v1:${kind}:${sessionId || 'draft'}`
@@ -5466,11 +5739,11 @@ function BoardGames({ kind, sessionId, frame, panelRef, onMove, gestureProps, on
   const confirmCancel = useRef(null)
   const [resultDismissed, setResultDismissed] = useState(false)
   const resultReview = useRef(null)
-  const [compact, setCompact] = useState(false), [cursor, setCursor] = useState(kind === 'chess' ? 52 : 112)
+  const [compact, setCompact] = useState(false), [cursor, setCursor] = useState(kind === 'chess' ? 52 : kind === 'xiangqi' ? 64 : 112)
   const status = useSessionStatus(snapshot => snapshot.get(sessionId)), previous = useRef(status?.running)
   const blocked = !status || !!status.pendingInteraction, result = boardResult(g)
-  const history = kind === 'chess' ? g.chess.history() : g.moves.map(at => `${String.fromCharCode(65 + at % 15)}${15 - Math.floor(at / 15)}`)
-  const botTurn = g.mode === 'computer' && (kind === 'chess' ? g.chess.turn() === 'b' : g.moves.length % 2 === 1)
+  const history = kind === 'chess' ? g.chess.history() : kind === 'xiangqi' ? g.xiangqi.history.map(move => `${xqPoint(move.from)}→${xqPoint(move.to)}`) : g.moves.map(at => `${String.fromCharCode(65 + at % 15)}${15 - Math.floor(at / 15)}`)
+  const botTurn = g.mode === 'computer' && (kind === 'chess' ? g.chess.turn() === 'b' : kind === 'xiangqi' ? g.xiangqi.turn === 'b' : g.moves.length % 2 === 1)
   const active = !paused && !blocked && !result && !confirmMode
   const showResult = !!result && !resultDismissed && !confirmMode && !blocked
   const changed = () => { setSelected(null); setPromotion(null); setResultDismissed(false); refresh(n => n + 1) }
@@ -5500,18 +5773,25 @@ function BoardGames({ kind, sessionId, frame, panelRef, onMove, gestureProps, on
     if (!active || !botTurn) return
     const timer = setTimeout(() => {
       if (kind === 'chess') { const move = chooseChess(g.chess); if (move) g.chess.move(move) }
+      else if (kind === 'xiangqi') { const move = chooseXiangqi(g.xiangqi); if (move) playXiangqi(g, move.from, move.to) }
       else { const at = chooseGomoku(g); if (at !== null) playGomoku(g, at) }
       changed()
     }, 350)
     return () => clearTimeout(timer)
   }, [g, revision, active, botTurn])
-  const legal = selected && kind === 'chess' ? g.chess.moves({ square: selected, verbose: true }) : []
-  const last = kind === 'chess' ? g.chess.history({ verbose: true }).at(-1) : g.moves.at(-1)
+  const legal = selected !== null && kind === 'chess' ? g.chess.moves({ square: selected, verbose: true }) : selected !== null && kind === 'xiangqi' ? xiangqiMovesFrom(g.xiangqi, selected) : []
+  const last = kind === 'chess' ? g.chess.history({ verbose: true }).at(-1) : kind === 'xiangqi' ? g.xiangqi.history.at(-1) : g.moves.at(-1)
   const pieces = { w: { k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟' }, b: { k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟' } }
   const pieceNames = en ? { k: 'king', q: 'queen', r: 'rook', b: 'bishop', n: 'knight', p: 'pawn' } : { k: '王', q: '后', r: '车', b: '象', n: '马', p: '兵' }
+  const xqNames = en ? { k: 'general', a: 'advisor', e: 'elephant', n: 'horse', r: 'rook', c: 'cannon', p: 'soldier' } : { k: '将', a: '士', e: '象', n: '马', r: '车', c: '炮', p: '兵' }
   const playSquare = at => {
     if (!active || botTurn || promotion) return
     if (kind === 'gomoku') { if (playGomoku(g, at)) changed(); return }
+    if (kind === 'xiangqi') {
+      if (selected !== null && legal.some(move => move.to === at)) { playXiangqi(g, selected, at); changed() }
+      else setSelected(g.xiangqi.board[at]?.color === g.xiangqi.turn ? at : null)
+      return
+    }
     const choices = legal.filter(move => move.to === at)
     if (choices.length) {
       if (choices.some(move => move.promotion)) setPromotion({ from: selected, to: at })
@@ -5520,12 +5800,14 @@ function BoardGames({ kind, sessionId, frame, panelRef, onMove, gestureProps, on
   }
   const newGame = (mode, start = true) => { setGame(createBoardGame(kind, mode)); changed(); setPaused(!start || blocked || document.hidden); setConfirmMode(null) }
   const requestNew = mode => { if (history.length && !result) { setPaused(true); setConfirmMode(mode) } else newGame(mode, mode === g.mode) }
-  const resultText = { whiteWin: text('白方获胜', 'White wins'), blackWin: text('黑方获胜', 'Black wins'), draw: text('和棋', 'Draw'), stalemate: text('逼和', 'Stalemate') }
+  const resultText = kind === 'xiangqi'
+    ? { redWin: text('红方获胜', 'Red wins'), blackWin: text('黑方获胜', 'Black wins'), draw: text('和棋', 'Draw'), stalemate: text('困毙', 'Stalemate') }
+    : { whiteWin: text('白方获胜', 'White wins'), blackWin: text('黑方获胜', 'Black wins'), draw: text('和棋', 'Draw'), stalemate: text('逼和', 'Stalemate') }
   const drawn = result === 'draw' || result === 'stalemate'
-  const won = result === (kind === 'chess' ? 'whiteWin' : 'blackWin')
+  const won = result === (kind === 'chess' ? 'whiteWin' : kind === 'xiangqi' ? 'redWin' : 'blackWin')
   const resultTone = drawn ? 'draw' : g.mode === 'local' || won ? 'win' : 'loss'
   const resultTitle = drawn ? text('本局和棋', 'A draw') : g.mode === 'local' ? resultText[result] : won ? text('你赢了！', 'You win!') : text('本局落败', 'You lost this round')
-  const resultReason = drawn ? (result === 'stalemate' ? text('无合法走法，逼和收场。', 'No legal moves. Stalemate.') : text('本局未分胜负，再下一局吧。', 'Honors even. Ready for another round?')) : kind === 'gomoku' ? text('五子连线，胜负已定。', 'Five in a row decides the game.') : text('将杀！王已无路可退。', 'Checkmate! The king has no escape.')
+  const resultReason = drawn ? (result === 'stalemate' ? text('无合法走法，逼和收场。', 'No legal moves. Stalemate.') : text('本局未分胜负，再下一局吧。', 'Honors even. Ready for another round?')) : kind === 'gomoku' ? text('五子连线，胜负已定。', 'Five in a row decides the game.') : kind === 'xiangqi' ? text('绝杀！对方老将已无处可逃。', 'Checkmate! The general has no escape.') : text('将杀！王已无路可退。', 'Checkmate! The king has no escape.')
   const trapDialogFocus = event => {
     if (event.key !== 'Tab') return
     event.preventDefault()
@@ -5533,24 +5815,27 @@ function BoardGames({ kind, sessionId, frame, panelRef, onMove, gestureProps, on
     const at = buttons.indexOf(document.activeElement)
     buttons[(at + (event.shiftKey ? -1 : 1) + buttons.length) % buttons.length]?.focus()
   }
-  const turnWhite = kind === 'chess' ? g.chess.turn() === 'w' : g.moves.length % 2 === 1
-  const turn = turnWhite ? text('白方', 'White') : text('黑方', 'Black')
-  const stateText = blocked ? t(status?.pendingInteraction ? 'attention' : 'unavailable') : result ? resultText[result] : paused ? text('已暂停 · 随时继续这一局', 'Paused · resume anytime') : botTurn ? text('电脑思考中…', 'Computer thinking…') : `${turn}${text('行棋', ' to move')}${kind === 'chess' && g.chess.isCheck() ? text(' · 将军！', ' · Check!') : ''}`
-  const size = kind === 'chess' ? 8 : 15
-  const cells = Array.from({ length: size * size }, (_, i) => {
-    const x = i % size, y = Math.floor(i / size), square = kind === 'chess' ? `${'abcdefgh'[x]}${8 - y}` : i
-    const piece = kind === 'chess' ? g.chess.get(square) : null, stone = g.cells[i]
-    const target = legal.some(move => move.to === square), marked = kind === 'chess' ? last?.from === square || last?.to === square : last === i
-    const checked = piece?.type === 'k' && piece.color === g.chess.turn() && g.chess.isCheck()
-    const label = kind === 'chess' ? `${square}${piece ? ` ${piece.color === 'w' ? text('白', 'white ') : text('黑', 'black ')}${pieceNames[piece.type]}` : ''}` : `${String.fromCharCode(65 + x)}${15 - y}${stone ? stone === 1 ? text(' 黑子', ' black') : text(' 白子', ' white') : ''}`
+  const turnFirst = kind === 'chess' ? g.chess.turn() === 'w' : kind === 'xiangqi' ? g.xiangqi.turn === 'r' : g.moves.length % 2 === 1
+  const turn = kind === 'xiangqi' ? (turnFirst ? text('红方', 'Red') : text('黑方', 'Black')) : turnFirst ? text('白方', 'White') : text('黑方', 'Black')
+  const inCheck = kind === 'chess' ? g.chess.isCheck() : kind === 'xiangqi' ? xiangqiAttacked(g.xiangqi.board, g.xiangqi.turn) : false
+  const stateText = blocked ? t(status?.pendingInteraction ? 'attention' : 'unavailable') : result ? resultText[result] : paused ? text('已暂停 · 随时继续这一局', 'Paused · resume anytime') : botTurn ? text('电脑思考中…', 'Computer thinking…') : `${turn}${text('行棋', ' to move')}${inCheck ? text(' · 将军！', ' · Check!') : ''}`
+  const cols = kind === 'chess' ? 8 : kind === 'xiangqi' ? 9 : 15, rows = kind === 'xiangqi' ? 10 : cols, total = cols * rows
+  const cells = Array.from({ length: total }, (_, i) => {
+    const x = i % cols, y = Math.floor(i / cols), square = kind === 'chess' ? `${'abcdefgh'[x]}${8 - y}` : i
+    const piece = kind === 'chess' ? g.chess.get(square) : kind === 'xiangqi' ? g.xiangqi.board[i] : null, stone = g.cells[i]
+    const target = legal.some(move => move.to === square)
+    const marked = kind === 'chess' ? last?.from === square || last?.to === square : kind === 'xiangqi' ? last?.from === i || last?.to === i : last === i
+    const checked = kind === 'chess' ? piece?.type === 'k' && piece.color === g.chess.turn() && g.chess.isCheck() : kind === 'xiangqi' ? piece?.type === 'k' && piece.color === g.xiangqi.turn && inCheck : false
+    const label = kind === 'chess' ? `${square}${piece ? ` ${piece.color === 'w' ? text('白', 'white ') : text('黑', 'black ')}${pieceNames[piece.type]}` : ''}` : kind === 'xiangqi' ? `${xqPoint(i)}${piece ? ` ${piece.color === 'r' ? text('红', 'red ') : text('黑', 'black ')}${xqNames[piece.type]}` : ''}` : `${String.fromCharCode(65 + x)}${15 - y}${stone ? stone === 1 ? text(' 黑子', ' black') : text(' 白子', ' white') : ''}`
     return h('button', { type: 'button', key: i, className: `board-cell ${(x + y) % 2 ? 'dark' : 'light'} ${marked ? 'last' : ''} ${selected === square ? 'selected' : ''} ${target ? 'legal' : ''} ${checked ? 'check' : ''} ${g.line.includes(i) ? 'winning' : ''}`,
       style: kind === 'gomoku' ? { '--line-left': x === 0 ? '50%' : '0%', '--line-right': x === 14 ? '50%' : '0%', '--line-top': y === 0 ? '50%' : '0%', '--line-bottom': y === 14 ? '50%' : '0%' } : undefined,
       'aria-label': label, 'aria-disabled': !active || botTurn || !!promotion, tabIndex: cursor === i ? 0 : -1,
       onFocus: () => setCursor(i), onClick: () => playSquare(square), onKeyDown: event => {
-        const delta = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -size, ArrowDown: size }[event.key]
-        if (delta !== undefined) { event.preventDefault(); event.stopPropagation(); const next = Math.max(0, Math.min(size * size - 1, i + delta)); setCursor(next); event.currentTarget.parentElement.children[next].focus() }
+        const delta = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -cols, ArrowDown: cols }[event.key]
+        if (delta !== undefined) { event.preventDefault(); event.stopPropagation(); const next = Math.max(0, Math.min(total - 1, i + delta)); setCursor(next); event.currentTarget.parentElement.querySelectorAll('.board-cell')[next].focus() }
       },
-    }, piece && h('span', { className: `chess-piece ${piece.color}`, 'aria-hidden': true }, pieces[piece.color][piece.type]),
+    }, kind === 'chess' && piece && h('span', { className: `chess-piece ${piece.color}`, 'aria-hidden': true }, pieces[piece.color][piece.type]),
+    kind === 'xiangqi' && piece && h('span', { className: `xiangqi-piece ${piece.color}`, 'aria-hidden': true }, XQ_GLYPH[piece.color][piece.type]),
     kind === 'chess' && (x === 0 || y === 7) && h('small', { className: 'board-coordinate', 'aria-hidden': true }, `${x === 0 ? 8 - y : ''}${y === 7 ? 'abcdefgh'[x] : ''}`),
     kind === 'gomoku' && [3, 7, 11].includes(x) && [3, 7, 11].includes(y) && h('i', { className: 'board-star' }),
     kind === 'gomoku' && !!stone && h('span', { className: `board-stone stone-${stone}`, 'aria-hidden': true }))
@@ -5560,20 +5845,20 @@ function BoardGames({ kind, sessionId, frame, panelRef, onMove, gestureProps, on
     onBlur: event => { if (!event.currentTarget.contains(event.relatedTarget)) setPaused(true) },
     onKeyDown: event => { if (event.key === 'Escape') { event.stopPropagation(); setPaused(true); setPromotion(null); setConfirmMode(null); if (showResult) setResultDismissed(true) } },
   }, h('header', { className: 'arcade-header', onPointerDown: moveWindow, ...gestureProps },
-    h('span', { className: 'board-header-icon', 'aria-hidden': true }, kind === 'chess' ? '♞' : '◉'), h('div', { className: 'arcade-heading' }, h('h2', null, t(kind)), !compact && h('p', null, text('落一子，让等待慢下来', 'A thoughtful move between replies'))),
+    h('span', { className: 'board-header-icon', 'aria-hidden': true }, { chess: '♞', gomoku: '◉', xiangqi: '帥' }[kind]), h('div', { className: 'arcade-heading' }, h('h2', null, t(kind)), !compact && h('p', null, text('落一子，让等待慢下来', 'A thoughtful move between replies'))),
     h('button', { type: 'button', onClick: () => setCompact(!compact) }, t(compact ? 'restore' : 'minimal')),
     h('button', { type: 'button', onClick: onClose }, text('游戏库', 'Library'))),
   h('div', { className: 'board-layout' }, h('main', { className: 'board-main', style: { maxWidth: Math.max(180, Math.min(660, frame.height - (compact ? 155 : 205))) } },
-    h('div', { className: 'board-turn', role: 'status' }, h('span', { className: `board-turn-dot ${turnWhite ? 'white' : 'black'}` }), stateText),
-    h('div', { className: `board-grid ${kind}`, role: 'group', 'aria-label': text('棋盘', 'Board') }, ...cells),
+    h('div', { className: 'board-turn', role: 'status' }, h('span', { className: `board-turn-dot ${turnFirst ? (kind === 'xiangqi' ? 'red' : 'white') : 'black'}` }), stateText),
+    h('div', { className: `board-grid ${kind}`, role: 'group', 'aria-label': text('棋盘', 'Board') }, kind === 'xiangqi' && xiangqiBoardLines(), ...cells),
     h('div', { className: 'board-controls' }, h('button', { type: 'button', className: 'arcade-primary', disabled: blocked || !!confirmMode, onClick: () => result ? setResultDismissed(false) : setPaused(!paused) }, result ? text('查看结算', 'View result') : paused ? history.length ? t('resume') : text('开始对弈', 'Start game') : t('pause')),
       h('button', { type: 'button', disabled: !history.length || !!confirmMode, onClick: () => { undoBoard(g); changed() } }, text('悔棋', 'Undo')),
       h('button', { type: 'button', onClick: () => requestNew(g.mode) }, text('新的一局', 'New game'))),
     promotion && h('div', { className: 'board-promotion', role: 'group', 'aria-label': text('选择升变棋子', 'Choose promotion') }, h('strong', null, text('兵升变', 'Promote pawn')), ...['q', 'r', 'b', 'n'].map(p => h('button', { type: 'button', key: p, disabled: !active, onClick: () => { g.chess.move({ ...promotion, promotion: p }); changed() } }, pieces[g.chess.turn()][p], ' ', pieceNames[p])), h('button', { type: 'button', onClick: () => setPromotion(null) }, text('取消', 'Cancel'))),
     ),
     !compact && h('aside', { className: 'board-sidebar' }, h('div', { className: 'board-mode', role: 'group', 'aria-label': text('对弈模式', 'Game mode') }, ...[['computer', text('人机对弈', 'Computer')], ['local', text('本地双人', 'Two players')]].map(([mode, label]) => h('button', { key: mode, type: 'button', 'aria-pressed': g.mode === mode, onClick: () => { if (mode !== g.mode) requestNew(mode) } }, label))),
-      h('h3', null, g.mode === 'computer' ? text(kind === 'chess' ? '你执白，先行' : '你执黑，先行', kind === 'chess' ? 'You play White' : 'You play Black') : text('轮流行棋', 'Take turns')),
-      h('p', null, kind === 'chess' ? text('点击棋子查看合法落点，再点击目标格。支持王车易位、吃过路兵与升变。', 'Select a piece to see legal moves. Castling, en passant and promotion are supported.') : text('横、竖或斜向连成五子即可获胜。15×15 自由规则，长连也算胜利，无禁手。', 'Connect five horizontally, vertically or diagonally. Freestyle 15×15: overlines win, no forbidden moves.')),
+      h('h3', null, g.mode === 'computer' ? (kind === 'xiangqi' ? text('你执红，先行', 'You play Red') : text(kind === 'chess' ? '你执白，先行' : '你执黑，先行', kind === 'chess' ? 'You play White' : 'You play Black')) : text('轮流行棋', 'Take turns')),
+      h('p', null, kind === 'chess' ? text('点击棋子查看合法落点，再点击目标格。支持王车易位、吃过路兵与升变。', 'Select a piece to see legal moves. Castling, en passant and promotion are supported.') : kind === 'xiangqi' ? text('点击棋子查看合法落点。马走日、象走田，炮隔子吃子，兵过河后可平移；将死或困毙对方即获胜。', 'Select a piece to see legal moves. Horses move in 日, elephants in 田, cannons capture over a screen, soldiers shift sideways across the river. Win by checkmate or stalemate.') : text('横、竖或斜向连成五子即可获胜。15×15 自由规则，长连也算胜利，无禁手。', 'Connect five horizontally, vertically or diagonally. Freestyle 15×15: overlines win, no forbidden moves.')),
       h('div', { className: 'board-history-heading' }, h('h3', null, text('棋谱', 'Moves')), h('span', null, `${history.length} ${text('手', 'plies')}`)),
       h('ol', { className: 'board-history', start: Math.max(1, history.length - 11) }, ...history.slice(-12).map((move, i) => h('li', { key: history.length - 12 + i }, move))),
       h('small', { className: 'board-note' }, text('轻量本地电脑 · 无需 API Key。按会话自动保存；任务结束或需要操作时自动暂停。', 'Casual local opponent · no API key. Saved per session; pauses when the task ends or needs input.')))),
@@ -5595,14 +5880,14 @@ function BoardGames({ kind, sessionId, frame, panelRef, onMove, gestureProps, on
     ...['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se'].map(edge => h('div', { key: edge, className: `arcade-resize-handle arcade-resize-${edge}`, onPointerDown: event => moveWindow(event, edge), ...gestureProps })))
 }
 
-const arcadeCSS = ".dsh-arcade {\n  --arcade-bg: var(--dsw-alias-bg-layer-1, #fff);\n  --arcade-soft: var(--dsw-alias-bg-base, #f8f9fb);\n  --arcade-border: var(--dsw-alias-border-l3, #e1e4e9);\n  --arcade-text: var(--dsw-alias-label-primary, #263148);\n  --arcade-muted: var(--dsw-alias-label-secondary, #697386);\n  --arcade-hover: var(--dsw-alias-interactive-bg-hover, #eef0f4);\n  --arcade-accent: var(--dsw-alias-brand-primary-new-colorprimary-new-color, #4d6bfe);\n  --arcade-background: var(--dsw-alias-bg-base, #f8f9fb);\n  --arcade-grid: var(--dsw-alias-border-l1, #e9ecf1);\n  --arcade-ink: var(--dsw-alias-label-primary, #263148);\n  --arcade-obstacle: var(--dsw-alias-label-caption, #aab5c8);\n  --arcade-food: var(--dsw-static-orange-500, #db8e48);\n  --arcade-enemy: var(--dsw-static-red-500, #d56868);\n  font-family: inherit;\n  color: inherit;\n}\n.dsh-arcade * { box-sizing: border-box; }\n.dsh-arcade button { font: inherit; cursor: pointer; border: 1px solid var(--arcade-border); border-radius: var(--dsw-radius-md, 8px); background: transparent; color: var(--arcade-text); padding: 7px 11px; touch-action: manipulation; }\n.dsh-arcade button:hover:not(:disabled) { background: var(--arcade-hover); }\n.dsh-arcade button:focus-visible, .dsh-arcade canvas:focus-visible, .arcade-search:focus-visible { outline: 2px solid var(--arcade-accent); outline-offset: 2px; }\n.dsh-arcade button:disabled { cursor: default; opacity: .4; }\n.dsh-arcade .arcade-launch { background: transparent; color: inherit; border-color: transparent; font-size: 12px; white-space: nowrap; }\n.arcade-panel { position: fixed; z-index: 60; right: auto; bottom: auto; container: arcade-window / inline-size; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--arcade-border); border-radius: 16px; background: var(--arcade-bg); color: var(--arcade-text); box-shadow: 0 16px 64px rgb(0 0 0 / 14%), 0 2px 8px rgb(0 0 0 / 4%); font-size: 13px; text-align: left; line-height: 1.5; }\n.arcade-header { display: flex; gap: 10px; align-items: center; padding: 18px 18px; border-bottom: 1px solid var(--arcade-border); flex-shrink: 0; cursor: grab; touch-action: none; user-select: none; }\n.arcade-header:active { cursor: grabbing; }\n.dsh-arcade .arcade-drag-handle { border: 0; cursor: grab; padding: 0; font-size: 22px; color: var(--arcade-muted); touch-action: none; }\n.dsh-arcade .arcade-mode-toggle { font-size: 11px; white-space: nowrap; padding: 5px 8px; }\n.arcade-heading { flex: 1; }\n.arcade-panel h2 { font-size: 17px; font-weight: 600; margin: 0; }\n.arcade-panel p { margin: 0; }\n.arcade-heading p { color: var(--arcade-muted); margin-top: 2px; font-size: 12px; }\n.dsh-arcade .arcade-close { border: 0; font-size: 22px; line-height: 28px; padding: 0; width: 30px; height: 30px; color: var(--arcade-muted); }\n.dsh-arcade .arcade-menu-toggle { display: none; font-size: 12px; }\n.arcade-body { display: flex; flex: 1; min-height: 0; }\n.arcade-library { flex: 0 0 178px; width: 178px; background: var(--arcade-soft); border-right: 1px solid var(--arcade-border); padding: 20px 12px 16px; display: flex; flex-direction: column; min-height: 0; gap: 14px; }\n.arcade-library-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 4px; }\n.arcade-library-heading strong { font-size: 12px; font-weight: 600; }\n.arcade-library-heading small { font-size: 10px; color: var(--arcade-muted); }\n.arcade-search { display: block; width: 100%; min-width: 0; font: inherit; font-size: 12px; line-height: 20px; padding: 6px 9px; background: var(--arcade-bg); border: 1px solid var(--arcade-border); color: var(--arcade-text); border-radius: 7px; }\n.arcade-search::placeholder { color: var(--arcade-muted); }\n.arcade-filters { display: flex; flex-wrap: wrap; gap: 4px; }\n.dsh-arcade .arcade-filters button { font-size: 11px; border: 0; border-radius: 5px; padding: 3px 7px; color: var(--arcade-muted); }\n.dsh-arcade .arcade-filters button[aria-pressed=true] { color: var(--arcade-text); background: var(--arcade-hover); font-weight: 600; }\n.arcade-game-list { flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 7px; scrollbar-width: thin; }\n.dsh-arcade .arcade-game-list button { flex-shrink: 0; display: flex; align-items: center; gap: 11px; text-align: left; padding: 12px 9px; border-color: transparent; }\n.arcade-game-list button[aria-pressed=true] { background: var(--arcade-bg); border-color: var(--arcade-border); box-shadow: 0 1px 3px rgb(0 0 0 / 3%); }\n.arcade-game-icon { flex-shrink: 0; color: var(--arcade-muted); }\n.arcade-game-list button[aria-pressed=true] .arcade-game-icon { color: var(--arcade-accent); }\n.arcade-game-list strong { display: block; font-size: 12px; font-weight: 500; }\n.arcade-game-list small { display: block; font-size: 10px; color: var(--arcade-muted); margin-top: 3px; }\n.arcade-empty { color: var(--arcade-muted); padding: 12px 5px; font-size: 12px; }\n.arcade-library-tip { color: var(--arcade-muted); font-size: 10px; padding: 4px; }\n.arcade-play { flex: 1; min-width: 0; min-height: 0; padding: 20px 24px 16px; display: flex; flex-direction: column; overflow-y: auto; }\n.arcade-game-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }\n.arcade-game-heading h3 { font-size: 18px; font-weight: 600; margin: 0; }\n.arcade-game-heading p { color: var(--arcade-muted); font-size: 12px; margin-top: 3px; }\n.arcade-orientation { font-size: 10px; color: var(--arcade-muted); background: var(--arcade-soft); border: 1px solid var(--arcade-border); border-radius: 5px; padding: 2px 7px; white-space: nowrap; }\n.arcade-scores { flex-shrink: 0; display: flex; justify-content: space-between; margin: 15px 0 12px; color: var(--arcade-muted); font-size: 11px; }\n.arcade-scores span { display: flex; align-items: baseline; gap: 9px; }\n.arcade-scores strong { color: var(--arcade-text); font: 21px ui-monospace, monospace; letter-spacing: 1px; }\n.arcade-arena { flex: 1; display: grid; place-items: center; min-height: 80px; padding: 4px 0; }\n.arcade-stage { position: relative; width: 100%; border: 1px solid var(--arcade-border); border-radius: 10px; overflow: hidden; background: var(--arcade-soft); }\n.arcade-panel[data-orientation=portrait] .arcade-stage { width: min(100%, 264px, calc((100dvh - 370px) * 2 / 3)); }\n.arcade-panel[data-orientation=square] .arcade-stage { width: min(100%, 360px, calc(100dvh - 430px)); }\n.arcade-tank-hud { display: flex; justify-content: space-between; gap: 12px; font-size: 11px; color: var(--arcade-muted); margin-bottom: 8px; flex-shrink: 0; }\n.arcade-stage canvas { display: block; width: 100%; height: auto; touch-action: none; }\n.arcade-curtain { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: color-mix(in srgb, var(--arcade-bg) 86%, transparent); pointer-events: none; text-align: center; padding: 12px; }\n.arcade-curtain-icon { width: 36px; height: 36px; color: var(--arcade-muted); margin-bottom: 4px; }\n.arcade-curtain strong { font-size: 13px; font-weight: 500; color: var(--arcade-muted); }\n.dsh-arcade .arcade-primary { background: var(--dsw-alias-button-primary-fill, #263148); color: var(--dsw-alias-label-primary-foreground, #fff); border-color: transparent; pointer-events: auto; padding: 8px 18px; }\n.dsh-arcade .arcade-primary:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover, #424c60); }\n.arcade-panel .arcade-hint { flex-shrink: 0; color: var(--arcade-muted); font-size: 11px; margin: 12px 0; text-align: center; }\n.arcade-toolbar { flex-shrink: 0; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }\n.arcade-controls, .arcade-actions { display: flex; gap: 5px; }\n.arcade-controls button { min-width: 30px; padding: 6px 8px; font-size: 11px; touch-action: none; }\n.arcade-actions button { padding: 6px 10px; font-size: 11px; }\n.arcade-footnote { display: block; flex-shrink: 0; color: var(--arcade-muted); font-size: 10px; margin-top: 12px; }\n.arcade-status { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 11px 22px; color: var(--arcade-muted); background: var(--arcade-soft); border-top: 1px solid var(--arcade-border); font-size: 11px; }\n.arcade-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--arcade-muted); flex-shrink: 0; }\n.arcade-dot.working { background: var(--arcade-accent); }\n@container arcade-window (max-width: 600px) {\n  .arcade-header { padding: 14px 16px; gap: 8px; }\n  .dsh-arcade .arcade-menu-toggle { display: block; }\n  .arcade-body { flex-direction: column; }\n  .arcade-library { display: none; width: 100%; flex: 0 0 auto; border-right: 0; border-bottom: 1px solid var(--arcade-border); padding: 12px 16px; gap: 8px; max-height: 240px; }\n  .arcade-library[data-expanded=true] { display: flex; flex: 1; max-height: none; }\n  .arcade-body:has(.arcade-library[data-expanded=true]) .arcade-play { display: none; }\n  .arcade-library-heading, .arcade-library-tip { display: none; }\n  .arcade-game-list { flex: 1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: max-content; align-content: start; max-height: none; }\n  .dsh-arcade .arcade-game-list button { padding: 7px; }\n  .arcade-play { padding: 16px; }\n  .arcade-panel[data-orientation=portrait] .arcade-stage { width: min(100%, 264px, calc((100dvh - 345px) * 2 / 3)); }\n  .arcade-status { padding: 10px 16px; }\n  .arcade-controls, .arcade-actions { gap: 4px; }\n}\n@media (max-height: 620px) {\n  .arcade-play { overflow-y: auto; }\n}\r\n.arcade-resize-handle { position: absolute; z-index: 8; touch-action: none; }\n.arcade-resize-n, .arcade-resize-s { left: 14px; right: 14px; height: 7px; cursor: ns-resize; }\n.arcade-resize-n { top: 0; } .arcade-resize-s { bottom: 0; }\n.arcade-resize-e, .arcade-resize-w { top: 14px; bottom: 14px; width: 7px; cursor: ew-resize; }\n.arcade-resize-e { right: 0; } .arcade-resize-w { left: 0; }\n.arcade-resize-nw, .arcade-resize-ne, .arcade-resize-sw, .arcade-resize-se { width: 16px; height: 16px; }\n.arcade-resize-nw { top: 0; left: 0; cursor: nwse-resize; }\n.arcade-resize-ne { top: 0; right: 0; cursor: nesw-resize; }\n.arcade-resize-sw { bottom: 0; left: 0; cursor: nesw-resize; }\n.arcade-resize-se { bottom: 0; right: 0; cursor: nwse-resize; }\n.arcade-resize-se::after { content: ''; position: absolute; width: 7px; height: 7px; right: 4px; bottom: 4px; border-right: 2px solid var(--arcade-muted); border-bottom: 2px solid var(--arcade-muted); opacity: .4; }\n.arcade-resize-handle:focus-visible { outline: 2px solid var(--arcade-accent); outline-offset: -2px; }\n.arcade-panel[data-minimal=true] { border-radius: 10px; }\n.arcade-panel[data-minimal=true] > .arcade-header,\n.arcade-panel[data-minimal=true] > .arcade-status,\n.arcade-panel[data-minimal=true] .arcade-library,\n.arcade-panel[data-minimal=true] .arcade-play > :not(.arcade-arena) { display: none; }\n.arcade-panel[data-minimal=true] .arcade-body { display: flex; height: 100%; }\n.arcade-panel[data-minimal=true] .arcade-play { display: flex; padding: 0; overflow: hidden; }\n.arcade-panel[data-minimal=true] .arcade-arena { padding: 0; min-height: 0; width: 100%; height: 100%; }\n.arcade-panel[data-minimal=true] .arcade-stage { border: 0; border-radius: 0; }\n.arcade-panel[data-minimal=true] canvas { width: 100%; height: 100%; }\n.arcade-panel[data-minimal=true] .arcade-curtain-icon { display: none; }\n.arcade-panel[data-minimal=true] .arcade-curtain { gap: 10px; }\n.arcade-panel[data-minimal=true] .arcade-curtain strong { font-size: 11px; }\n.arcade-panel[data-minimal=true] .arcade-primary { padding: 6px 10px; font-size: 11px; }\n.arcade-mini-tools { position: absolute; top: 8px; left: 8px; right: 8px; display: flex; justify-content: flex-end; align-items: center; gap: 4px; z-index: 7; opacity: 0; transition: opacity .12s; pointer-events: none; }\n.arcade-panel:hover .arcade-mini-tools, .arcade-mini-tools:focus-within { opacity: 1; }\n.dsh-arcade .arcade-mini-tools button { pointer-events: auto; width: 28px; height: 28px; padding: 0; display: grid; place-items: center; background: color-mix(in srgb, var(--arcade-bg) 94%, transparent); border: 1px solid var(--arcade-border); font-size: 15px; box-shadow: 0 1px 4px rgb(0 0 0 / 8%); }\n.dsh-arcade .arcade-mini-tools .arcade-mini-drag { margin-right: auto; cursor: grab; touch-action: none; font-size: 22px; }\n.arcade-mini-notice { position: absolute; bottom: 8px; left: 8px; right: 8px; padding: 7px 9px; background: var(--arcade-bg); border: 1px solid var(--arcade-border); border-radius: 6px; font-size: 10px; color: var(--arcade-text); z-index: 6; }\n@media (hover: none) { .arcade-mini-tools { opacity: 1; } }\n.arcade-escort-info { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--arcade-muted); font-size: 11px; }\n.dsh-arcade .arcade-escort-info button { flex-shrink: 0; padding: 4px 8px; font-size: 11px; }\n.arcade-escort-summary { display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 14px; border: 1px solid var(--arcade-border); border-radius: 10px; background: var(--arcade-bg); font-size: 12px; }\n.arcade-escort-summary small { font-size: 10px; color: var(--arcade-muted); }\n.arcade-escort-summary span { font-variant-numeric: tabular-nums; font-size: 17px; }\n.arcade-upgrades { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; gap: 5px; color: var(--arcade-text); font-size: 11px; }\n.arcade-upgrades small { color: var(--arcade-muted); }\n.dsh-arcade .arcade-upgrades button { padding: 5px 8px; border: 1px solid var(--arcade-accent); font-size: 11px; }\n@media (max-height: 800px) {\n  .arcade-panel[data-orientation=portrait] .arcade-header { padding-top: 11px; padding-bottom: 11px; }\n  .arcade-panel[data-orientation=portrait] .arcade-heading p,\n  .arcade-panel[data-orientation=portrait] .arcade-game-heading p { display: none; }\n  .arcade-panel[data-orientation=portrait] .arcade-play { padding-top: 12px; padding-bottom: 10px; }\n  .arcade-panel[data-orientation=portrait] .arcade-scores { margin: 8px 0; }\n  .arcade-panel[data-orientation=portrait] .arcade-hint { margin: 6px 0; }\n  .arcade-panel[data-orientation=portrait] .arcade-footnote { margin-top: 6px; }\n}\n\n.exp-logo, .exp-library-icon { color: var(--arcade-accent); font-size: 30px; line-height: 1; }\n.exp-library-icon { width: 24px; flex-shrink: 0; }\n.exp-header { padding: 13px 18px; }\n.exp-header .arcade-heading p { display: block !important; font-size: 10px; }\n.exp-header button { padding: 5px 9px; font-size: 11px; }\n.exp-simulation { padding: 7px 18px; font-size: 10px; color: var(--arcade-muted); border-bottom: 1px solid var(--arcade-border); background: var(--arcade-soft); }\n.exp-simulation > span { color: var(--arcade-accent); font-weight: 600; margin-right: 9px; }\n.exp-simulation { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }\n.exp-modes { display: flex; gap: 4px; }\n.dsh-arcade .exp-modes button { padding: 4px 9px; font-size: 10px; border-radius: 5px; }\n.dsh-arcade .exp-modes button[aria-pressed='true'] { color: var(--arcade-accent); border-color: var(--arcade-accent); background: var(--arcade-bg); }\n.exp-action-body { display: grid; grid-template-columns: minmax(0,1fr) 202px; flex: 1; min-height: 0; overflow-y: auto; background: #0e202d; }\n.exp-action-main { min-width: 0; padding: 12px; display: flex; flex-direction: column; align-items: center; gap: 10px; background: radial-gradient(ellipse at top,#243e4b 0,#132b39 40%,#0b1b28 100%); }\n.exp-action-stage { position: relative; width: min(100%,calc(var(--exp-play-height, 560px) * 2 / 3)); flex-shrink: 0; border: 1px solid #42616c; border-radius: 9px; overflow: hidden; background: #0b2130; box-shadow: 0 14px 40px rgb(0 6 15 / 30%),0 0 0 4px rgb(6 18 28 / 20%); }\n.exp-action-stage canvas { display: block; width: 100%; height: auto; touch-action: none; }\n.exp-action-curtain { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 22px; text-align: center; gap: 18px; background: linear-gradient(180deg,rgb(8 23 33 / 72%),rgb(8 26 38 / 91%)); color: #e1e9e4; }\n.exp-action-curtain h3 { margin: 0; font-size: 26px; font-weight: 500; letter-spacing: 2px; }\n.exp-action-curtain p { color: #a8bec4; font-size: 12px; max-width: 280px; line-height: 1.9; }\n.dsh-arcade .exp-action-curtain button { background: #203d4e; color: #e0e8de; border-color: #567782; padding: 9px 18px; font-size: 12px; }\n.dsh-arcade .exp-action-curtain .exp-primary { background: #c9d8c5; color: #152f3e; border-color: #e2e9d6; padding: 12px 26px; font-weight: 600; box-shadow: 0 5px 20px rgb(0 0 0 / 20%); }\n.dsh-arcade .exp-action-curtain button:hover:not(:disabled) { background: #466475; }\n.dsh-arcade .exp-action-curtain .exp-primary:hover:not(:disabled) { background: #e2ead7; }\n.exp-action-line, .exp-action-skills, .exp-action-pad { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; justify-content: center; }\n.exp-action-line { justify-content: flex-end; margin-top: 14px; }\n.exp-action-skills { width: 100%; }\n.dsh-arcade .exp-action-skills button { background: #203745; color: #d7e3df; border-color: #405968; border-radius: 6px; font-size: 10px; padding: 10px 11px; box-shadow: inset 0 1px 0 rgb(220 237 228 / 5%); }\n.dsh-arcade .exp-action-skills button:hover:not(:disabled) { background: #325263; border-color: #7798a5; }\n.dsh-arcade .exp-action-skills .exp-dash { background: #2a4552; color: #d7d9be; border-color: #6c827e; }\n.dsh-arcade .exp-action-skills button:disabled { opacity: .44; }\n.exp-action-pad { gap: 4px; }\n.dsh-arcade .exp-action-pad button { width: 28px; padding: 10px 0; touch-action: none; }\n.exp-action-help { color: #7f9da9; font-size: 10px; line-height: 1.7; text-align: center; }\n.exp-action-sidebar { border-left: 1px solid #304854; padding: 22px 15px; background: linear-gradient(180deg,#172d3b,#102330); color: #d0ddd9; overflow-y: auto; scrollbar-width: thin; }\n.exp-eyebrow { color: #80a6b8; font-size: 9px; letter-spacing: .6px; }\n.exp-mission-title { font-size: 20px; font-weight: 500; margin: 8px 0 4px; color: #e4e8db; letter-spacing: .5px; }\n.exp-mission-title { font-size: 16px; line-height: 1.65; overflow-wrap: anywhere; }\n.exp-action-todo > div { min-width: 0; overflow-wrap: anywhere; }\n.exp-mission-goal { color: #8ca7b2; font-size: 11px; }\n.exp-action-sidebar h4 { font-size: 9px; color: #7396a6; letter-spacing: 1px; margin: 23px 0 13px; font-weight: 500; }\n.exp-action-todo { display: flex; gap: 9px; align-items: flex-start; padding: 9px 6px; border-left: 2px solid #344c58; font-size: 11px; margin: 0 0 6px; }\n.exp-action-todo > span { color: #6a94a7; font: 11px ui-monospace,monospace; padding-top: 1px; }\n.exp-action-todo small, .exp-action-agent small { display: block; margin-top: 5px; font-size: 9px; color: #7f9ba9; }\n.exp-action-todo[data-status='进行中'] { border-color: #8dbcca; background: linear-gradient(90deg,#264854,transparent); color: #eff0dd; }\n.exp-action-todo[data-status='进行中'] small { color: #9ec3c9; }\n.exp-action-todo[data-status='已完成'] { border-color: #627f70; }\n.exp-action-todo[data-status='已完成'] > span { color: #a8c2a6; }\n.exp-action-agent { margin-bottom: 13px !important; font-size: 11px; color: #c2d4d2; padding-left: 8px; border-left: 2px solid #4d7080; }\n.exp-action-event { border-top: 1px solid #2b414e; padding-top: 9px; margin-top: 10px; }\n.exp-action-event small { color: #9fbcb6; font-size: 9px; }\n.exp-action-event p, .exp-action-cargo p { color: #90aab5; font-size: 10px; line-height: 1.8; margin-top: 5px; overflow-wrap: anywhere; }\n.exp-action-cargo p { color: #c0c8a8; }\n.exp-muted { color: #7796a5; font-size: 10px; line-height: 1.8; }\n.exp-footer { display: flex; justify-content: space-between; gap: 8px; padding: 9px 18px; border-top: 1px solid var(--arcade-border); font-size: 10px; color: var(--arcade-muted); flex-shrink: 0; }\n.exp-modal-backdrop { position: absolute; inset: 0; background: rgb(0 7 16 / 55%); z-index: 20; display: grid; place-items: center; padding: 20px; }\n.exp-modal { background: var(--arcade-bg); color: var(--arcade-text); border: 1px solid var(--arcade-border); border-radius: 12px; padding: 24px; width: min(100%,460px); max-height: 90%; overflow-y: auto; box-shadow: 0 12px 40px rgb(0 0 0 / 24%); }\n.exp-modal h3 { margin: 0 0 14px; font-size: 18px; }\n.exp-modal p { color: var(--arcade-muted); line-height: 1.8; font-size: 12px; }\n.dsh-arcade .exp-modal .exp-primary { background: var(--arcade-accent); color: white; border-color: var(--arcade-accent); }\n@container arcade-window (max-width: 580px) {\n .exp-action-body { display: block; }\n .exp-action-main { padding: 12px 8px; }\n .exp-action-sidebar { border-left: 0; border-top: 1px solid #304854; overflow: visible; }\n .exp-action-curtain { padding: 16px; gap: 13px; }\n .exp-action-curtain h3 { font-size: 21px; }\n .exp-action-curtain p { font-size: 11px; }\n .exp-action-pad { width: 100%; }\n .dsh-arcade .exp-action-pad button { width: 42px; padding: 7px 0; }\n .exp-action-todo { display: inline-flex; width: 49%; }\n .exp-footer { padding: 8px 12px; font-size: 9px; }\n}\r\n\n.board-panel{min-width:0;overflow:hidden}.board-panel button{font:inherit;cursor:pointer}.board-panel button:disabled{opacity:.45;cursor:default}.board-header-icon{font-size:32px;color:var(--arcade-accent)}.board-panel .arcade-header>button,.board-controls button,.board-mode button,.board-promotion button,.board-confirm button{border:1px solid var(--arcade-border);background:var(--arcade-soft);color:var(--arcade-text);border-radius:8px;padding:7px 11px}.board-layout{display:flex;gap:22px;padding:18px;overflow:auto;min-height:0;flex:1;align-items:flex-start}.board-main{flex:1;min-width:0;max-width:660px;margin:auto}.board-turn{font-size:12px;min-height:32px;display:flex;align-items:center;gap:8px;color:var(--arcade-muted)}.board-turn-dot{width:11px;height:11px;border-radius:50%;box-shadow:0 0 0 1px #777}.board-turn-dot.white{background:#faf5df}.board-turn-dot.black{background:#242b33}.board-grid{display:grid;aspect-ratio:1;width:100%;border-radius:8px;overflow:hidden;box-shadow:0 6px 20px #0002;isolation:isolate}.board-grid.chess{grid-template-columns:repeat(8,minmax(0,1fr));border:5px solid #47585f}.board-grid.gomoku{grid-template-columns:repeat(15,minmax(0,1fr));padding:10px;box-sizing:border-box;background:repeating-linear-gradient(2deg,#ffffff06 0px,#ffffff06 2px,#00000004 3px,transparent 6px),linear-gradient(100deg,#d6af71,#ebca91 45%,#d3aa6d);border:4px solid #a47c46}.board-cell{position:relative;display:flex;align-items:center;justify-content:center;aspect-ratio:1;min-width:0;padding:0!important;border:0!important;border-radius:0!important;line-height:1;background:transparent;touch-action:manipulation}.chess .light{background:#dfdfcd}.chess .dark{background:#738d90}.chess .last{box-shadow:inset 0 0 0 100px #e8cb4655}.chess .selected{box-shadow:inset 0 0 0 3px #c58c26}.chess .check{background:#c96d63}.chess-piece{position:relative;z-index:1;font-family:'Segoe UI Symbol','DejaVu Sans',serif;font-size:clamp(22px,5.4cqw,48px);font-weight:normal}.chess-piece.w{color:#fff8e6;-webkit-text-stroke:1px #5b5343;filter:drop-shadow(0 2px 1px #0005)}.chess-piece.b{color:#26323a;-webkit-text-stroke:.6px #111b24;filter:drop-shadow(0 2px 1px #fff4)}.chess .legal:after{content:'';position:absolute;z-index:2;width:24%;height:24%;border-radius:50%;background:#314e6390;pointer-events:none}.chess .legal:has(.chess-piece):after{width:85%;height:85%;background:transparent;border:3px solid #d3b035;box-sizing:border-box}.board-coordinate{position:absolute;bottom:2px;left:3px;font:9px/1 sans-serif;color:#263e48;z-index:3}.board-cell:focus-visible{outline:3px solid #db7b29!important;outline-offset:-3px;z-index:4}.gomoku .board-cell:before{content:'';position:absolute;left:var(--line-left);right:var(--line-right);top:50%;height:1px;background:#705934a0}.gomoku .board-cell:after{content:'';position:absolute;top:var(--line-top);bottom:var(--line-bottom);left:50%;width:1px;background:#705934a0;z-index:-1}.board-star{position:absolute;width:5px;height:5px;border-radius:50%;background:#67502e}.board-stone{width:84%;height:84%;border-radius:50%;position:relative;z-index:1;box-shadow:1px 3px 3px #0006}.stone-1{background:radial-gradient(circle at 33% 28%,#596069,#1e2227 55%,#101215)}.stone-2{background:radial-gradient(circle at 33% 28%,#fff,#eee7d5 65%,#c2b99f)}.gomoku .last .board-stone:after{content:'';position:absolute;inset:35%;border-radius:50%;background:#db8741}.gomoku .winning .board-stone{outline:3px solid #de7a22}.board-controls{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:16px}.board-controls .arcade-primary{background:var(--arcade-accent);color:var(--arcade-bg)}.board-sidebar{width:172px;flex-shrink:0;padding-top:8px;font-size:12px;line-height:1.8;color:var(--arcade-muted)}.board-sidebar h3{font-size:13px;color:var(--arcade-text);margin:16px 0 6px}.board-mode{display:flex;gap:4px}.board-mode button{padding:7px;flex:1;font-size:12px}.board-mode [aria-pressed=true]{border-color:var(--arcade-accent);color:var(--arcade-accent)}.board-history-heading{display:flex;align-items:baseline;justify-content:space-between}.board-history{display:grid;grid-template-columns:1fr 1fr;gap:4px 24px;padding-left:26px;font-family:ui-monospace,monospace;min-height:60px}.board-note{display:block;border-top:1px solid var(--arcade-border);padding-top:12px}.board-promotion,.board-confirm{margin-top:12px;padding:12px;border:1px solid var(--arcade-border);border-radius:10px;display:flex;flex-wrap:wrap;gap:8px}.board-confirm p{width:100%;margin:0}.board-panel[data-compact=true] .board-layout{padding:8px}.board-panel[data-compact=true] .arcade-header{padding:7px 12px}.board-panel[data-compact=true] .board-header-icon{font-size:20px}@container arcade-window (max-width:620px){.board-layout{flex-direction:column;gap:6px;padding:12px}.board-main{width:100%}.board-sidebar{width:100%;display:grid;grid-template-columns:1fr 1fr;gap:0 18px}.board-sidebar>p,.board-note{grid-column:1/-1}.board-history{margin:6px 0}.board-sidebar h3{margin:8px 0}.chess-piece{font-size:8cqw}.board-panel .arcade-header{gap:6px}.board-panel .arcade-header>button{padding:6px}}\n.board-stone,.board-star,.board-turn-dot,.gomoku .last .board-stone:after,.chess .legal:after{corner-shape:round!important}\r\n.board-confirm-backdrop{position:absolute;inset:0;z-index:10;display:grid;place-items:center;padding:20px;background:#15233866;backdrop-filter:blur(2px)}\n.board-confirm-backdrop .board-confirm{box-sizing:border-box;width:min(100%,340px);margin:0;padding:22px;gap:14px;background:var(--arcade-bg);color:var(--arcade-text);box-shadow:0 12px 40px #0003}\n.board-confirm-backdrop .board-confirm strong{width:100%;font-size:16px}.board-confirm-backdrop .board-confirm p{font-size:13px;color:var(--arcade-muted);line-height:1.6}.board-confirm-backdrop button:focus-visible{outline:2px solid var(--arcade-accent);outline-offset:3px}\r\n.board-result-backdrop{position:absolute;inset:0;z-index:9;display:grid;place-items:center;padding:18px;background:#15233880;backdrop-filter:blur(3px)}\n.board-result{--result-color:#ad771b;box-sizing:border-box;width:min(100%,380px);max-height:100%;overflow:auto;text-align:center;padding:28px 24px 24px;border:1px solid var(--arcade-border);border-radius:20px;background:var(--arcade-bg);color:var(--arcade-text);box-shadow:0 20px 60px #0004;animation:board-result-arrive .3s ease-out}\n.board-result[data-result=loss]{--result-color:#6984a6}.board-result[data-result=draw]{--result-color:#568d87}\n.board-result-emblem{position:relative;display:grid;place-items:center;width:92px;height:92px;margin:0 auto 22px;border-radius:50%;corner-shape:round!important;color:var(--result-color);background:color-mix(in srgb,var(--result-color) 12%,transparent);box-shadow:0 0 0 8px color-mix(in srgb,var(--result-color) 5%,transparent)}\n.board-result-emblem svg{width:58px;height:58px}.board-result-eyebrow{font-size:11px;letter-spacing:2px;color:var(--arcade-muted)}.board-result h2{font-size:30px;font-weight:700;margin:10px 0;line-height:1.3}.board-result>p{margin:0;color:var(--arcade-muted);font-size:13px;line-height:1.8}.board-result-stats{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:16px 0;margin:18px 0;border-top:1px solid var(--arcade-border);border-bottom:1px solid var(--arcade-border);font-size:12px;color:var(--arcade-muted)}.board-result-stats strong{font-size:18px;color:var(--arcade-text)}.board-result-actions{display:flex;gap:10px}.board-result-actions button{flex:1;padding:10px 12px;border:1px solid var(--arcade-border);border-radius:9px;background:var(--arcade-soft);color:var(--arcade-text)}.board-result-actions .arcade-primary{background:var(--arcade-accent);color:#fff;border-color:transparent}.board-result button:focus-visible{outline:2px solid var(--arcade-accent);outline-offset:3px}\n@keyframes board-result-arrive{from{opacity:0;transform:translateY(10px) scale(.97)}to{opacity:1;transform:none}}@media(prefers-reduced-motion:reduce){.board-result{animation:none}}\r\n"
+const arcadeCSS = ".dsh-arcade {\n  --arcade-bg: var(--dsw-alias-bg-layer-1, #fff);\n  --arcade-soft: var(--dsw-alias-bg-base, #f8f9fb);\n  --arcade-border: var(--dsw-alias-border-l3, #e1e4e9);\n  --arcade-text: var(--dsw-alias-label-primary, #263148);\n  --arcade-muted: var(--dsw-alias-label-secondary, #697386);\n  --arcade-hover: var(--dsw-alias-interactive-bg-hover, #eef0f4);\n  --arcade-accent: var(--dsw-alias-brand-primary-new-colorprimary-new-color, #4d6bfe);\n  --arcade-background: var(--dsw-alias-bg-base, #f8f9fb);\n  --arcade-grid: var(--dsw-alias-border-l1, #e9ecf1);\n  --arcade-ink: var(--dsw-alias-label-primary, #263148);\n  --arcade-obstacle: var(--dsw-alias-label-caption, #aab5c8);\n  --arcade-food: var(--dsw-static-orange-500, #db8e48);\n  --arcade-enemy: var(--dsw-static-red-500, #d56868);\n  font-family: inherit;\n  color: inherit;\n}\n.dsh-arcade * { box-sizing: border-box; }\n.dsh-arcade button { font: inherit; cursor: pointer; border: 1px solid var(--arcade-border); border-radius: var(--dsw-radius-md, 8px); background: transparent; color: var(--arcade-text); padding: 7px 11px; touch-action: manipulation; }\n.dsh-arcade button:hover:not(:disabled) { background: var(--arcade-hover); }\n.dsh-arcade button:focus-visible, .dsh-arcade canvas:focus-visible, .arcade-search:focus-visible { outline: 2px solid var(--arcade-accent); outline-offset: 2px; }\n.dsh-arcade button:disabled { cursor: default; opacity: .4; }\n.dsh-arcade .arcade-launch { background: transparent; color: inherit; border-color: transparent; font-size: 12px; white-space: nowrap; }\n.arcade-panel { position: fixed; z-index: 60; right: auto; bottom: auto; container: arcade-window / inline-size; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--arcade-border); border-radius: 16px; background: var(--arcade-bg); color: var(--arcade-text); box-shadow: 0 16px 64px rgb(0 0 0 / 14%), 0 2px 8px rgb(0 0 0 / 4%); font-size: 13px; text-align: left; line-height: 1.5; }\n.arcade-header { display: flex; gap: 10px; align-items: center; padding: 18px 18px; border-bottom: 1px solid var(--arcade-border); flex-shrink: 0; cursor: grab; touch-action: none; user-select: none; }\n.arcade-header:active { cursor: grabbing; }\n.dsh-arcade .arcade-drag-handle { border: 0; cursor: grab; padding: 0; font-size: 22px; color: var(--arcade-muted); touch-action: none; }\n.dsh-arcade .arcade-mode-toggle { font-size: 11px; white-space: nowrap; padding: 5px 8px; }\n.arcade-heading { flex: 1; }\n.arcade-panel h2 { font-size: 17px; font-weight: 600; margin: 0; }\n.arcade-panel p { margin: 0; }\n.arcade-heading p { color: var(--arcade-muted); margin-top: 2px; font-size: 12px; }\n.dsh-arcade .arcade-close { border: 0; font-size: 22px; line-height: 28px; padding: 0; width: 30px; height: 30px; color: var(--arcade-muted); }\n.dsh-arcade .arcade-menu-toggle { display: none; font-size: 12px; }\n.arcade-body { display: flex; flex: 1; min-height: 0; }\n.arcade-library { flex: 0 0 178px; width: 178px; background: var(--arcade-soft); border-right: 1px solid var(--arcade-border); padding: 20px 12px 16px; display: flex; flex-direction: column; min-height: 0; gap: 14px; }\n.arcade-library-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 4px; }\n.arcade-library-heading strong { font-size: 12px; font-weight: 600; }\n.arcade-library-heading small { font-size: 10px; color: var(--arcade-muted); }\n.arcade-search { display: block; width: 100%; min-width: 0; font: inherit; font-size: 12px; line-height: 20px; padding: 6px 9px; background: var(--arcade-bg); border: 1px solid var(--arcade-border); color: var(--arcade-text); border-radius: 7px; }\n.arcade-search::placeholder { color: var(--arcade-muted); }\n.arcade-filters { display: flex; flex-wrap: wrap; gap: 4px; }\n.dsh-arcade .arcade-filters button { font-size: 11px; border: 0; border-radius: 5px; padding: 3px 7px; color: var(--arcade-muted); }\n.dsh-arcade .arcade-filters button[aria-pressed=true] { color: var(--arcade-text); background: var(--arcade-hover); font-weight: 600; }\n.arcade-game-list { flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 7px; scrollbar-width: thin; }\n.dsh-arcade .arcade-game-list button { flex-shrink: 0; display: flex; align-items: center; gap: 11px; text-align: left; padding: 12px 9px; border-color: transparent; }\n.arcade-game-list button[aria-pressed=true] { background: var(--arcade-bg); border-color: var(--arcade-border); box-shadow: 0 1px 3px rgb(0 0 0 / 3%); }\n.arcade-game-icon { flex-shrink: 0; color: var(--arcade-muted); }\n.arcade-game-list button[aria-pressed=true] .arcade-game-icon { color: var(--arcade-accent); }\n.arcade-game-list strong { display: block; font-size: 12px; font-weight: 500; }\n.arcade-game-list small { display: block; font-size: 10px; color: var(--arcade-muted); margin-top: 3px; }\n.arcade-empty { color: var(--arcade-muted); padding: 12px 5px; font-size: 12px; }\n.arcade-library-tip { color: var(--arcade-muted); font-size: 10px; padding: 4px; }\n.arcade-play { flex: 1; min-width: 0; min-height: 0; padding: 20px 24px 16px; display: flex; flex-direction: column; overflow-y: auto; }\n.arcade-game-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }\n.arcade-game-heading h3 { font-size: 18px; font-weight: 600; margin: 0; }\n.arcade-game-heading p { color: var(--arcade-muted); font-size: 12px; margin-top: 3px; }\n.arcade-orientation { font-size: 10px; color: var(--arcade-muted); background: var(--arcade-soft); border: 1px solid var(--arcade-border); border-radius: 5px; padding: 2px 7px; white-space: nowrap; }\n.arcade-scores { flex-shrink: 0; display: flex; justify-content: space-between; margin: 15px 0 12px; color: var(--arcade-muted); font-size: 11px; }\n.arcade-scores span { display: flex; align-items: baseline; gap: 9px; }\n.arcade-scores strong { color: var(--arcade-text); font: 21px ui-monospace, monospace; letter-spacing: 1px; }\n.arcade-arena { flex: 1; display: grid; place-items: center; min-height: 80px; padding: 4px 0; }\n.arcade-stage { position: relative; width: 100%; border: 1px solid var(--arcade-border); border-radius: 10px; overflow: hidden; background: var(--arcade-soft); }\n.arcade-panel[data-orientation=portrait] .arcade-stage { width: min(100%, 264px, calc((100dvh - 370px) * 2 / 3)); }\n.arcade-panel[data-orientation=square] .arcade-stage { width: min(100%, 360px, calc(100dvh - 430px)); }\n.arcade-tank-hud { display: flex; justify-content: space-between; gap: 12px; font-size: 11px; color: var(--arcade-muted); margin-bottom: 8px; flex-shrink: 0; }\n.arcade-stage canvas { display: block; width: 100%; height: auto; touch-action: none; }\n.arcade-curtain { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: color-mix(in srgb, var(--arcade-bg) 86%, transparent); pointer-events: none; text-align: center; padding: 12px; }\n.arcade-curtain-icon { width: 36px; height: 36px; color: var(--arcade-muted); margin-bottom: 4px; }\n.arcade-curtain strong { font-size: 13px; font-weight: 500; color: var(--arcade-muted); }\n.dsh-arcade .arcade-primary { background: var(--dsw-alias-button-primary-fill, #263148); color: var(--dsw-alias-label-primary-foreground, #fff); border-color: transparent; pointer-events: auto; padding: 8px 18px; }\n.dsh-arcade .arcade-primary:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover, #424c60); }\n.arcade-panel .arcade-hint { flex-shrink: 0; color: var(--arcade-muted); font-size: 11px; margin: 12px 0; text-align: center; }\n.arcade-toolbar { flex-shrink: 0; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }\n.arcade-controls, .arcade-actions { display: flex; gap: 5px; }\n.arcade-controls button { min-width: 30px; padding: 6px 8px; font-size: 11px; touch-action: none; }\n.arcade-actions button { padding: 6px 10px; font-size: 11px; }\n.arcade-footnote { display: block; flex-shrink: 0; color: var(--arcade-muted); font-size: 10px; margin-top: 12px; }\n.arcade-status { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 11px 22px; color: var(--arcade-muted); background: var(--arcade-soft); border-top: 1px solid var(--arcade-border); font-size: 11px; }\n.arcade-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--arcade-muted); flex-shrink: 0; }\n.arcade-dot.working { background: var(--arcade-accent); }\n@container arcade-window (max-width: 600px) {\n  .arcade-header { padding: 14px 16px; gap: 8px; }\n  .dsh-arcade .arcade-menu-toggle { display: block; }\n  .arcade-body { flex-direction: column; }\n  .arcade-library { display: none; width: 100%; flex: 0 0 auto; border-right: 0; border-bottom: 1px solid var(--arcade-border); padding: 12px 16px; gap: 8px; max-height: 240px; }\n  .arcade-library[data-expanded=true] { display: flex; flex: 1; max-height: none; }\n  .arcade-body:has(.arcade-library[data-expanded=true]) .arcade-play { display: none; }\n  .arcade-library-heading, .arcade-library-tip { display: none; }\n  .arcade-game-list { flex: 1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: max-content; align-content: start; max-height: none; }\n  .dsh-arcade .arcade-game-list button { padding: 7px; }\n  .arcade-play { padding: 16px; }\n  .arcade-panel[data-orientation=portrait] .arcade-stage { width: min(100%, 264px, calc((100dvh - 345px) * 2 / 3)); }\n  .arcade-status { padding: 10px 16px; }\n  .arcade-controls, .arcade-actions { gap: 4px; }\n}\n@media (max-height: 620px) {\n  .arcade-play { overflow-y: auto; }\n}\n.arcade-resize-handle { position: absolute; z-index: 8; touch-action: none; }\n.arcade-resize-n, .arcade-resize-s { left: 14px; right: 14px; height: 7px; cursor: ns-resize; }\n.arcade-resize-n { top: 0; } .arcade-resize-s { bottom: 0; }\n.arcade-resize-e, .arcade-resize-w { top: 14px; bottom: 14px; width: 7px; cursor: ew-resize; }\n.arcade-resize-e { right: 0; } .arcade-resize-w { left: 0; }\n.arcade-resize-nw, .arcade-resize-ne, .arcade-resize-sw, .arcade-resize-se { width: 16px; height: 16px; }\n.arcade-resize-nw { top: 0; left: 0; cursor: nwse-resize; }\n.arcade-resize-ne { top: 0; right: 0; cursor: nesw-resize; }\n.arcade-resize-sw { bottom: 0; left: 0; cursor: nesw-resize; }\n.arcade-resize-se { bottom: 0; right: 0; cursor: nwse-resize; }\n.arcade-resize-se::after { content: ''; position: absolute; width: 7px; height: 7px; right: 4px; bottom: 4px; border-right: 2px solid var(--arcade-muted); border-bottom: 2px solid var(--arcade-muted); opacity: .4; }\n.arcade-resize-handle:focus-visible { outline: 2px solid var(--arcade-accent); outline-offset: -2px; }\n.arcade-panel[data-minimal=true] { border-radius: 10px; }\n.arcade-panel[data-minimal=true] > .arcade-header,\n.arcade-panel[data-minimal=true] > .arcade-status,\n.arcade-panel[data-minimal=true] .arcade-library,\n.arcade-panel[data-minimal=true] .arcade-play > :not(.arcade-arena) { display: none; }\n.arcade-panel[data-minimal=true] .arcade-body { display: flex; height: 100%; }\n.arcade-panel[data-minimal=true] .arcade-play { display: flex; padding: 0; overflow: hidden; }\n.arcade-panel[data-minimal=true] .arcade-arena { padding: 0; min-height: 0; width: 100%; height: 100%; }\n.arcade-panel[data-minimal=true] .arcade-stage { border: 0; border-radius: 0; }\n.arcade-panel[data-minimal=true] canvas { width: 100%; height: 100%; }\n.arcade-panel[data-minimal=true] .arcade-curtain-icon { display: none; }\n.arcade-panel[data-minimal=true] .arcade-curtain { gap: 10px; }\n.arcade-panel[data-minimal=true] .arcade-curtain strong { font-size: 11px; }\n.arcade-panel[data-minimal=true] .arcade-primary { padding: 6px 10px; font-size: 11px; }\n.arcade-mini-tools { position: absolute; top: 8px; left: 8px; right: 8px; display: flex; justify-content: flex-end; align-items: center; gap: 4px; z-index: 7; opacity: 0; transition: opacity .12s; pointer-events: none; }\n.arcade-panel:hover .arcade-mini-tools, .arcade-mini-tools:focus-within { opacity: 1; }\n.dsh-arcade .arcade-mini-tools button { pointer-events: auto; width: 28px; height: 28px; padding: 0; display: grid; place-items: center; background: color-mix(in srgb, var(--arcade-bg) 94%, transparent); border: 1px solid var(--arcade-border); font-size: 15px; box-shadow: 0 1px 4px rgb(0 0 0 / 8%); }\n.dsh-arcade .arcade-mini-tools .arcade-mini-drag { margin-right: auto; cursor: grab; touch-action: none; font-size: 22px; }\n.arcade-mini-notice { position: absolute; bottom: 8px; left: 8px; right: 8px; padding: 7px 9px; background: var(--arcade-bg); border: 1px solid var(--arcade-border); border-radius: 6px; font-size: 10px; color: var(--arcade-text); z-index: 6; }\n@media (hover: none) { .arcade-mini-tools { opacity: 1; } }\n.arcade-escort-info { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--arcade-muted); font-size: 11px; }\n.dsh-arcade .arcade-escort-info button { flex-shrink: 0; padding: 4px 8px; font-size: 11px; }\n.arcade-escort-summary { display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 14px; border: 1px solid var(--arcade-border); border-radius: 10px; background: var(--arcade-bg); font-size: 12px; }\n.arcade-escort-summary small { font-size: 10px; color: var(--arcade-muted); }\n.arcade-escort-summary span { font-variant-numeric: tabular-nums; font-size: 17px; }\n.arcade-upgrades { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; gap: 5px; color: var(--arcade-text); font-size: 11px; }\n.arcade-upgrades small { color: var(--arcade-muted); }\n.dsh-arcade .arcade-upgrades button { padding: 5px 8px; border: 1px solid var(--arcade-accent); font-size: 11px; }\n@media (max-height: 800px) {\n  .arcade-panel[data-orientation=portrait] .arcade-header { padding-top: 11px; padding-bottom: 11px; }\n  .arcade-panel[data-orientation=portrait] .arcade-heading p,\n  .arcade-panel[data-orientation=portrait] .arcade-game-heading p { display: none; }\n  .arcade-panel[data-orientation=portrait] .arcade-play { padding-top: 12px; padding-bottom: 10px; }\n  .arcade-panel[data-orientation=portrait] .arcade-scores { margin: 8px 0; }\n  .arcade-panel[data-orientation=portrait] .arcade-hint { margin: 6px 0; }\n  .arcade-panel[data-orientation=portrait] .arcade-footnote { margin-top: 6px; }\n}\n\n.exp-logo, .exp-library-icon { color: var(--arcade-accent); font-size: 30px; line-height: 1; }\n.exp-library-icon { width: 24px; flex-shrink: 0; }\n.exp-header { padding: 13px 18px; }\n.exp-header .arcade-heading p { display: block !important; font-size: 10px; }\n.exp-header button { padding: 5px 9px; font-size: 11px; }\n.exp-simulation { padding: 7px 18px; font-size: 10px; color: var(--arcade-muted); border-bottom: 1px solid var(--arcade-border); background: var(--arcade-soft); }\n.exp-simulation > span { color: var(--arcade-accent); font-weight: 600; margin-right: 9px; }\n.exp-simulation { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }\n.exp-modes { display: flex; gap: 4px; }\n.dsh-arcade .exp-modes button { padding: 4px 9px; font-size: 10px; border-radius: 5px; }\n.dsh-arcade .exp-modes button[aria-pressed='true'] { color: var(--arcade-accent); border-color: var(--arcade-accent); background: var(--arcade-bg); }\n.exp-action-body { display: grid; grid-template-columns: minmax(0,1fr) 202px; flex: 1; min-height: 0; overflow-y: auto; background: #0e202d; }\n.exp-action-main { min-width: 0; padding: 12px; display: flex; flex-direction: column; align-items: center; gap: 10px; background: radial-gradient(ellipse at top,#243e4b 0,#132b39 40%,#0b1b28 100%); }\n.exp-action-stage { position: relative; width: min(100%,calc(var(--exp-play-height, 560px) * 2 / 3)); flex-shrink: 0; border: 1px solid #42616c; border-radius: 9px; overflow: hidden; background: #0b2130; box-shadow: 0 14px 40px rgb(0 6 15 / 30%),0 0 0 4px rgb(6 18 28 / 20%); }\n.exp-action-stage canvas { display: block; width: 100%; height: auto; touch-action: none; }\n.exp-action-curtain { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 22px; text-align: center; gap: 18px; background: linear-gradient(180deg,rgb(8 23 33 / 72%),rgb(8 26 38 / 91%)); color: #e1e9e4; }\n.exp-action-curtain h3 { margin: 0; font-size: 26px; font-weight: 500; letter-spacing: 2px; }\n.exp-action-curtain p { color: #a8bec4; font-size: 12px; max-width: 280px; line-height: 1.9; }\n.dsh-arcade .exp-action-curtain button { background: #203d4e; color: #e0e8de; border-color: #567782; padding: 9px 18px; font-size: 12px; }\n.dsh-arcade .exp-action-curtain .exp-primary { background: #c9d8c5; color: #152f3e; border-color: #e2e9d6; padding: 12px 26px; font-weight: 600; box-shadow: 0 5px 20px rgb(0 0 0 / 20%); }\n.dsh-arcade .exp-action-curtain button:hover:not(:disabled) { background: #466475; }\n.dsh-arcade .exp-action-curtain .exp-primary:hover:not(:disabled) { background: #e2ead7; }\n.exp-action-line, .exp-action-skills, .exp-action-pad { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; justify-content: center; }\n.exp-action-line { justify-content: flex-end; margin-top: 14px; }\n.exp-action-skills { width: 100%; }\n.dsh-arcade .exp-action-skills button { background: #203745; color: #d7e3df; border-color: #405968; border-radius: 6px; font-size: 10px; padding: 10px 11px; box-shadow: inset 0 1px 0 rgb(220 237 228 / 5%); }\n.dsh-arcade .exp-action-skills button:hover:not(:disabled) { background: #325263; border-color: #7798a5; }\n.dsh-arcade .exp-action-skills .exp-dash { background: #2a4552; color: #d7d9be; border-color: #6c827e; }\n.dsh-arcade .exp-action-skills button:disabled { opacity: .44; }\n.exp-action-pad { gap: 4px; }\n.dsh-arcade .exp-action-pad button { width: 28px; padding: 10px 0; touch-action: none; }\n.exp-action-help { color: #7f9da9; font-size: 10px; line-height: 1.7; text-align: center; }\n.exp-action-sidebar { border-left: 1px solid #304854; padding: 22px 15px; background: linear-gradient(180deg,#172d3b,#102330); color: #d0ddd9; overflow-y: auto; scrollbar-width: thin; }\n.exp-eyebrow { color: #80a6b8; font-size: 9px; letter-spacing: .6px; }\n.exp-mission-title { font-size: 20px; font-weight: 500; margin: 8px 0 4px; color: #e4e8db; letter-spacing: .5px; }\n.exp-mission-title { font-size: 16px; line-height: 1.65; overflow-wrap: anywhere; }\n.exp-action-todo > div { min-width: 0; overflow-wrap: anywhere; }\n.exp-mission-goal { color: #8ca7b2; font-size: 11px; }\n.exp-action-sidebar h4 { font-size: 9px; color: #7396a6; letter-spacing: 1px; margin: 23px 0 13px; font-weight: 500; }\n.exp-action-todo { display: flex; gap: 9px; align-items: flex-start; padding: 9px 6px; border-left: 2px solid #344c58; font-size: 11px; margin: 0 0 6px; }\n.exp-action-todo > span { color: #6a94a7; font: 11px ui-monospace,monospace; padding-top: 1px; }\n.exp-action-todo small, .exp-action-agent small { display: block; margin-top: 5px; font-size: 9px; color: #7f9ba9; }\n.exp-action-todo[data-status='进行中'] { border-color: #8dbcca; background: linear-gradient(90deg,#264854,transparent); color: #eff0dd; }\n.exp-action-todo[data-status='进行中'] small { color: #9ec3c9; }\n.exp-action-todo[data-status='已完成'] { border-color: #627f70; }\n.exp-action-todo[data-status='已完成'] > span { color: #a8c2a6; }\n.exp-action-agent { margin-bottom: 13px !important; font-size: 11px; color: #c2d4d2; padding-left: 8px; border-left: 2px solid #4d7080; }\n.exp-action-event { border-top: 1px solid #2b414e; padding-top: 9px; margin-top: 10px; }\n.exp-action-event small { color: #9fbcb6; font-size: 9px; }\n.exp-action-event p, .exp-action-cargo p { color: #90aab5; font-size: 10px; line-height: 1.8; margin-top: 5px; overflow-wrap: anywhere; }\n.exp-action-cargo p { color: #c0c8a8; }\n.exp-muted { color: #7796a5; font-size: 10px; line-height: 1.8; }\n.exp-footer { display: flex; justify-content: space-between; gap: 8px; padding: 9px 18px; border-top: 1px solid var(--arcade-border); font-size: 10px; color: var(--arcade-muted); flex-shrink: 0; }\n.exp-modal-backdrop { position: absolute; inset: 0; background: rgb(0 7 16 / 55%); z-index: 20; display: grid; place-items: center; padding: 20px; }\n.exp-modal { background: var(--arcade-bg); color: var(--arcade-text); border: 1px solid var(--arcade-border); border-radius: 12px; padding: 24px; width: min(100%,460px); max-height: 90%; overflow-y: auto; box-shadow: 0 12px 40px rgb(0 0 0 / 24%); }\n.exp-modal h3 { margin: 0 0 14px; font-size: 18px; }\n.exp-modal p { color: var(--arcade-muted); line-height: 1.8; font-size: 12px; }\n.dsh-arcade .exp-modal .exp-primary { background: var(--arcade-accent); color: white; border-color: var(--arcade-accent); }\n@container arcade-window (max-width: 580px) {\n .exp-action-body { display: block; }\n .exp-action-main { padding: 12px 8px; }\n .exp-action-sidebar { border-left: 0; border-top: 1px solid #304854; overflow: visible; }\n .exp-action-curtain { padding: 16px; gap: 13px; }\n .exp-action-curtain h3 { font-size: 21px; }\n .exp-action-curtain p { font-size: 11px; }\n .exp-action-pad { width: 100%; }\n .dsh-arcade .exp-action-pad button { width: 42px; padding: 7px 0; }\n .exp-action-todo { display: inline-flex; width: 49%; }\n .exp-footer { padding: 8px 12px; font-size: 9px; }\n}\n\n.board-panel{min-width:0;overflow:hidden}.board-panel button{font:inherit;cursor:pointer}.board-panel button:disabled{opacity:.45;cursor:default}.board-header-icon{font-size:32px;color:var(--arcade-accent)}.board-panel .arcade-header>button,.board-controls button,.board-mode button,.board-promotion button,.board-confirm button{border:1px solid var(--arcade-border);background:var(--arcade-soft);color:var(--arcade-text);border-radius:8px;padding:7px 11px}.board-layout{display:flex;gap:22px;padding:18px;overflow:auto;min-height:0;flex:1;align-items:flex-start}.board-main{flex:1;min-width:0;max-width:660px;margin:auto}.board-turn{font-size:12px;min-height:32px;display:flex;align-items:center;gap:8px;color:var(--arcade-muted)}.board-turn-dot{width:11px;height:11px;border-radius:50%;box-shadow:0 0 0 1px #777}.board-turn-dot.white{background:#faf5df}.board-turn-dot.black{background:#242b33}.board-grid{display:grid;aspect-ratio:1;width:100%;border-radius:8px;overflow:hidden;box-shadow:0 6px 20px #0002;isolation:isolate}.board-grid.chess{grid-template-columns:repeat(8,minmax(0,1fr));border:5px solid #47585f}.board-grid.gomoku{grid-template-columns:repeat(15,minmax(0,1fr));padding:10px;box-sizing:border-box;background:repeating-linear-gradient(2deg,#ffffff06 0px,#ffffff06 2px,#00000004 3px,transparent 6px),linear-gradient(100deg,#d6af71,#ebca91 45%,#d3aa6d);border:4px solid #a47c46}.board-cell{position:relative;display:flex;align-items:center;justify-content:center;aspect-ratio:1;min-width:0;padding:0!important;border:0!important;border-radius:0!important;line-height:1;background:transparent;touch-action:manipulation}.chess .light{background:#dfdfcd}.chess .dark{background:#738d90}.chess .last{box-shadow:inset 0 0 0 100px #e8cb4655}.chess .selected{box-shadow:inset 0 0 0 3px #c58c26}.chess .check{background:#c96d63}.chess-piece{position:relative;z-index:1;font-family:'Segoe UI Symbol','DejaVu Sans',serif;font-size:clamp(22px,5.4cqw,48px);font-weight:normal}.chess-piece.w{color:#fff8e6;-webkit-text-stroke:1px #5b5343;filter:drop-shadow(0 2px 1px #0005)}.chess-piece.b{color:#26323a;-webkit-text-stroke:.6px #111b24;filter:drop-shadow(0 2px 1px #fff4)}.chess .legal:after{content:'';position:absolute;z-index:2;width:24%;height:24%;border-radius:50%;background:#314e6390;pointer-events:none}.chess .legal:has(.chess-piece):after{width:85%;height:85%;background:transparent;border:3px solid #d3b035;box-sizing:border-box}.board-coordinate{position:absolute;bottom:2px;left:3px;font:9px/1 sans-serif;color:#263e48;z-index:3}.board-cell:focus-visible{outline:3px solid #db7b29!important;outline-offset:-3px;z-index:4}.gomoku .board-cell:before{content:'';position:absolute;left:var(--line-left);right:var(--line-right);top:50%;height:1px;background:#705934a0}.gomoku .board-cell:after{content:'';position:absolute;top:var(--line-top);bottom:var(--line-bottom);left:50%;width:1px;background:#705934a0;z-index:-1}.board-star{position:absolute;width:5px;height:5px;border-radius:50%;background:#67502e}.board-stone{width:84%;height:84%;border-radius:50%;position:relative;z-index:1;box-shadow:1px 3px 3px #0006}.stone-1{background:radial-gradient(circle at 33% 28%,#596069,#1e2227 55%,#101215)}.stone-2{background:radial-gradient(circle at 33% 28%,#fff,#eee7d5 65%,#c2b99f)}.gomoku .last .board-stone:after{content:'';position:absolute;inset:35%;border-radius:50%;background:#db8741}.gomoku .winning .board-stone{outline:3px solid #de7a22}.board-controls{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:16px}.board-controls .arcade-primary{background:var(--arcade-accent);color:var(--arcade-bg)}.board-sidebar{width:172px;flex-shrink:0;padding-top:8px;font-size:12px;line-height:1.8;color:var(--arcade-muted)}.board-sidebar h3{font-size:13px;color:var(--arcade-text);margin:16px 0 6px}.board-mode{display:flex;gap:4px}.board-mode button{padding:7px;flex:1;font-size:12px}.board-mode [aria-pressed=true]{border-color:var(--arcade-accent);color:var(--arcade-accent)}.board-history-heading{display:flex;align-items:baseline;justify-content:space-between}.board-history{display:grid;grid-template-columns:1fr 1fr;gap:4px 24px;padding-left:26px;font-family:ui-monospace,monospace;min-height:60px}.board-note{display:block;border-top:1px solid var(--arcade-border);padding-top:12px}.board-promotion,.board-confirm{margin-top:12px;padding:12px;border:1px solid var(--arcade-border);border-radius:10px;display:flex;flex-wrap:wrap;gap:8px}.board-confirm p{width:100%;margin:0}.board-panel[data-compact=true] .board-layout{padding:8px}.board-panel[data-compact=true] .arcade-header{padding:7px 12px}.board-panel[data-compact=true] .board-header-icon{font-size:20px}@container arcade-window (max-width:620px){.board-layout{flex-direction:column;gap:6px;padding:12px}.board-main{width:100%}.board-sidebar{width:100%;display:grid;grid-template-columns:1fr 1fr;gap:0 18px}.board-sidebar>p,.board-note{grid-column:1/-1}.board-history{margin:6px 0}.board-sidebar h3{margin:8px 0}.chess-piece{font-size:8cqw}.board-panel .arcade-header{gap:6px}.board-panel .arcade-header>button{padding:6px}}\n.board-stone,.board-star,.board-turn-dot,.gomoku .last .board-stone:after,.chess .legal:after{corner-shape:round!important}\n.board-confirm-backdrop{position:absolute;inset:0;z-index:10;display:grid;place-items:center;padding:20px;background:#15233866;backdrop-filter:blur(2px)}\n.board-confirm-backdrop .board-confirm{box-sizing:border-box;width:min(100%,340px);margin:0;padding:22px;gap:14px;background:var(--arcade-bg);color:var(--arcade-text);box-shadow:0 12px 40px #0003}\n.board-confirm-backdrop .board-confirm strong{width:100%;font-size:16px}.board-confirm-backdrop .board-confirm p{font-size:13px;color:var(--arcade-muted);line-height:1.6}.board-confirm-backdrop button:focus-visible{outline:2px solid var(--arcade-accent);outline-offset:3px}\n.board-result-backdrop{position:absolute;inset:0;z-index:9;display:grid;place-items:center;padding:18px;background:#15233880;backdrop-filter:blur(3px)}\n.board-result{--result-color:#ad771b;box-sizing:border-box;width:min(100%,380px);max-height:100%;overflow:auto;text-align:center;padding:28px 24px 24px;border:1px solid var(--arcade-border);border-radius:20px;background:var(--arcade-bg);color:var(--arcade-text);box-shadow:0 20px 60px #0004;animation:board-result-arrive .3s ease-out}\n.board-result[data-result=loss]{--result-color:#6984a6}.board-result[data-result=draw]{--result-color:#568d87}\n.board-result-emblem{position:relative;display:grid;place-items:center;width:92px;height:92px;margin:0 auto 22px;border-radius:50%;corner-shape:round!important;color:var(--result-color);background:color-mix(in srgb,var(--result-color) 12%,transparent);box-shadow:0 0 0 8px color-mix(in srgb,var(--result-color) 5%,transparent)}\n.board-result-emblem svg{width:58px;height:58px}.board-result-eyebrow{font-size:11px;letter-spacing:2px;color:var(--arcade-muted)}.board-result h2{font-size:30px;font-weight:700;margin:10px 0;line-height:1.3}.board-result>p{margin:0;color:var(--arcade-muted);font-size:13px;line-height:1.8}.board-result-stats{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:16px 0;margin:18px 0;border-top:1px solid var(--arcade-border);border-bottom:1px solid var(--arcade-border);font-size:12px;color:var(--arcade-muted)}.board-result-stats strong{font-size:18px;color:var(--arcade-text)}.board-result-actions{display:flex;gap:10px}.board-result-actions button{flex:1;padding:10px 12px;border:1px solid var(--arcade-border);border-radius:9px;background:var(--arcade-soft);color:var(--arcade-text)}.board-result-actions .arcade-primary{background:var(--arcade-accent);color:#fff;border-color:transparent}.board-result button:focus-visible{outline:2px solid var(--arcade-accent);outline-offset:3px}\n@keyframes board-result-arrive{from{opacity:0;transform:translateY(10px) scale(.97)}to{opacity:1;transform:none}}@media(prefers-reduced-motion:reduce){.board-result{animation:none}}\n.board-grid.xiangqi{grid-template-columns:repeat(9,minmax(0,1fr));aspect-ratio:9/10;position:relative;border:4px solid #a47c46;background:repeating-linear-gradient(2deg,#ffffff06 0px,#ffffff06 2px,#00000004 3px,transparent 6px),linear-gradient(100deg,#d6af71,#ebca91 45%,#d3aa6d)}\n.xiangqi-lines{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}\n.xiangqi-lines path{stroke:#6e5636;stroke-width:.035;fill:none}\n.xiangqi-lines .xiangqi-stars{stroke-width:.03}\n.xiangqi-lines text{fill:#6e5636;font-size:.5px;text-anchor:middle;dominant-baseline:central;letter-spacing:.14px;font-family:'Songti SC','STSong','SimSun',serif}\n.xiangqi .board-cell.light,.xiangqi .board-cell.dark{background:transparent}\n.xiangqi .last{box-shadow:inset 0 0 0 100px #e8cb4644}\n.xiangqi .selected{box-shadow:inset 0 0 0 3px #c58c26}\n.xiangqi-piece{display:flex;align-items:center;justify-content:center;width:88%;aspect-ratio:1;border-radius:50%;corner-shape:round!important;background:radial-gradient(circle at 36% 30%,#fbf3dd,#f0dfb2 60%,#dcc288);font-family:'Songti SC','STSong','SimSun',serif;font-size:clamp(13px,4.8cqw,34px);font-weight:700;position:relative;z-index:1;box-shadow:1px 2px 3px #0005;user-select:none}\n.xiangqi-piece.r{color:#b3342c;border:2px solid #b3342c}\n.xiangqi-piece.b{color:#2b3238;border:2px solid #2b3238}\n.xiangqi .check .xiangqi-piece{background:radial-gradient(circle at 36% 30%,#f8d9c8,#ecc2a8 60%,#dba98b)}\n.xiangqi .legal:after{content:'';position:absolute;z-index:2;width:22%;height:22%;border-radius:50%;corner-shape:round!important;background:#314e6390;pointer-events:none}\n.xiangqi .legal:has(.xiangqi-piece):after{width:96%;height:96%;background:transparent;border:3px solid #d3b035;box-sizing:border-box}\n.board-turn-dot.red{background:#b3342c}\n"
 const React = require('react')
 const h = React.createElement
 const { useEffect, useRef, useState } = React
 const NS = 'whileplay'
 const dictionaries = {
   zh: {
-    chess: '国际象棋', gomoku: '五子棋', board: '棋类', chessDescription: '运筹每一步，将杀对手', gomokuDescription: '落子成线，攻守之间',
+    chess: '国际象棋', gomoku: '五子棋', xiangqi: '中国象棋', board: '棋类', chessDescription: '运筹每一步，将杀对手', gomokuDescription: '落子成线，攻守之间', xiangqiDescription: '楚河汉界，直捣黄龙',
     title: '玩一小局', subtitle: '让等待变成一小局', open: '玩一小局', close: '收起',
     plane: '飞机大战', tank: '坦克大战', snake: '贪吃蛇', start: '开始游戏', resume: '继续', pause: '暂停', restart: '重新开始',
     score: '得分', best: '最高分', paused: '已暂停', over: '本局结束', idle: '随时开始，随时停下',
@@ -5624,7 +5909,7 @@ const dictionaries = {
     n: '上边', s: '下边', e: '右边', w: '左边', nw: '左上角', ne: '右上角', sw: '左下角', se: '右下角',
   },
   en: {
-    chess: 'Chess', gomoku: 'Gomoku', board: 'Board', chessDescription: 'Plan your moves. Find checkmate.', gomokuDescription: 'Connect five. Balance attack and defense.',
+    chess: 'Chess', gomoku: 'Gomoku', xiangqi: 'Xiangqi', board: 'Board', chessDescription: 'Plan your moves. Find checkmate.', gomokuDescription: 'Connect five. Balance attack and defense.', xiangqiDescription: 'Cross the river. Take the general.',
     title: 'Whileplay', subtitle: 'A little play between replies', open: 'Play a little', close: 'Collapse',
     plane: 'Air battle', tank: 'Tank battle', snake: 'Snake', start: 'Start game', resume: 'Resume', pause: 'Pause', restart: 'Restart',
     score: 'Score', best: 'Best', paused: 'Paused', over: 'Game over', idle: 'Start anytime. Pause anytime.',
@@ -5951,7 +6236,7 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
   const selected = GAME_CATALOG.find(item => item.id === kind)
   const orientation = gameOrientation(selected)
   const categories = ['all', ...new Set(GAME_CATALOG.map(item => item.category)), 'board']
-  const visibleBoards = ['chess', 'gomoku'].filter(id => ['all', 'board'].includes(category) && `${id} ${t(id)} ${t(`${id}Description`)}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
+  const visibleBoards = ['chess', 'gomoku', 'xiangqi'].filter(id => ['all', 'board'].includes(category) && `${id} ${t(id)} ${t(`${id}Description`)}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
   const visibleGames = GAME_CATALOG.filter(item => (category === 'all' || item.category === category)
     && `${t(item.id)} ${t(`${item.id}Description`)} ${t(item.category)}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
   const showExpedition = ['all', 'action'].includes(category) && '小队护送远征 expedition todo 子agent 工具 交付物'.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())
@@ -5990,7 +6275,7 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
             type: 'button', key: item.id, 'aria-label': t(item.id), 'aria-pressed': item.id === kind, onClick: () => { if (item.id !== kind) reset(item.id); else setLibraryOpen(false) },
           }, gameIcon(item.id, 'arcade-game-icon'), h('span', null, h('strong', null, t(item.id)), h('small', null, t(item.category), ' · ', t(gameOrientation(item)))))),
           showExpedition && h('button', { type: 'button', 'aria-label': '小队护送远征', 'aria-pressed': false, onClick: openExpedition }, h('span', { className: 'exp-library-icon', 'aria-hidden': true }, '⌁'), h('span', null, h('strong', null, '小队护送远征'), h('small', null, '任务联动 · 实时护航'))),
-          ...visibleBoards.map(id => h('button', { key: id, type: 'button', 'aria-label': t(id), 'aria-pressed': false, onClick: () => openBoard(id) }, h('span', { className: 'exp-library-icon', 'aria-hidden': true }, id === 'chess' ? '♞' : '◉'), h('span', null, h('strong', null, t(id)), h('small', null, t('board'), ' · ', t('square'))))),
+          ...visibleBoards.map(id => h('button', { key: id, type: 'button', 'aria-label': t(id), 'aria-pressed': false, onClick: () => openBoard(id) }, h('span', { className: 'exp-library-icon', 'aria-hidden': true }, { chess: '♞', gomoku: '◉', xiangqi: '帥' }[id]), h('span', null, h('strong', null, t(id)), h('small', null, t('board'), ' · ', t('square'))))),
           !visibleGames.length && !showExpedition && !visibleBoards.length && h('p', { className: 'arcade-empty' }, t('noResults'))),
           h('small', { className: 'arcade-library-tip' }, t('libraryTip'))),
         h('main', { className: 'arcade-play' },

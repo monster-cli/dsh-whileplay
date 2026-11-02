@@ -4,7 +4,7 @@ const { useEffect, useRef, useState } = React
 const NS = 'whileplay'
 const dictionaries = {
   zh: {
-    chess: '国际象棋', gomoku: '五子棋', board: '棋类', chessDescription: '运筹每一步，将杀对手', gomokuDescription: '落子成线，攻守之间',
+    chess: '国际象棋', gomoku: '五子棋', xiangqi: '中国象棋', board: '棋类', chessDescription: '运筹每一步，将杀对手', gomokuDescription: '落子成线，攻守之间', xiangqiDescription: '楚河汉界，直捣黄龙',
     title: '玩一小局', subtitle: '让等待变成一小局', open: '玩一小局', close: '收起',
     plane: '飞机大战', tank: '坦克大战', snake: '贪吃蛇', start: '开始游戏', resume: '继续', pause: '暂停', restart: '重新开始',
     score: '得分', best: '最高分', paused: '已暂停', over: '本局结束', idle: '随时开始，随时停下',
@@ -26,7 +26,7 @@ const dictionaries = {
     n: '上边', s: '下边', e: '右边', w: '左边', nw: '左上角', ne: '右上角', sw: '左下角', se: '右下角',
   },
   en: {
-    chess: 'Chess', gomoku: 'Gomoku', board: 'Board', chessDescription: 'Plan your moves. Find checkmate.', gomokuDescription: 'Connect five. Balance attack and defense.',
+    chess: 'Chess', gomoku: 'Gomoku', xiangqi: 'Xiangqi', board: 'Board', chessDescription: 'Plan your moves. Find checkmate.', gomokuDescription: 'Connect five. Balance attack and defense.', xiangqiDescription: 'Cross the river. Take the general.',
     title: 'Whileplay', subtitle: 'A little play between replies', open: 'Play a little', close: 'Collapse',
     plane: 'Air battle', tank: 'Tank battle', snake: 'Snake', start: 'Start game', resume: 'Resume', pause: 'Pause', restart: 'Restart',
     score: 'Score', best: 'Best', paused: 'Paused', over: 'Game over', idle: 'Start anytime. Pause anytime.',
@@ -353,7 +353,7 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
   const selected = GAME_CATALOG.find(item => item.id === kind)
   const orientation = gameOrientation(selected)
   const categories = ['all', ...new Set(GAME_CATALOG.map(item => item.category)), 'board']
-  const visibleBoards = ['chess', 'gomoku'].filter(id => ['all', 'board'].includes(category) && `${id} ${t(id)} ${t(`${id}Description`)}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
+  const visibleBoards = ['chess', 'gomoku', 'xiangqi'].filter(id => ['all', 'board'].includes(category) && `${id} ${t(id)} ${t(`${id}Description`)}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
   const visibleGames = GAME_CATALOG.filter(item => (category === 'all' || item.category === category)
     && `${t(item.id)} ${t(`${item.id}Description`)} ${t(item.category)}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
   const showExpedition = ['all', 'action'].includes(category) && '小队护送远征 expedition todo 子agent 工具 交付物'.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())
@@ -392,7 +392,7 @@ function Arcade({ sessionId, useSessionStatus, useProjection = () => undefined, 
             type: 'button', key: item.id, 'aria-label': t(item.id), 'aria-pressed': item.id === kind, onClick: () => { if (item.id !== kind) reset(item.id); else setLibraryOpen(false) },
           }, gameIcon(item.id, 'arcade-game-icon'), h('span', null, h('strong', null, t(item.id)), h('small', null, t(item.category), ' · ', t(gameOrientation(item)))))),
           showExpedition && h('button', { type: 'button', 'aria-label': '小队护送远征', 'aria-pressed': false, onClick: openExpedition }, h('span', { className: 'exp-library-icon', 'aria-hidden': true }, '⌁'), h('span', null, h('strong', null, '小队护送远征'), h('small', null, '任务联动 · 实时护航'))),
-          ...visibleBoards.map(id => h('button', { key: id, type: 'button', 'aria-label': t(id), 'aria-pressed': false, onClick: () => openBoard(id) }, h('span', { className: 'exp-library-icon', 'aria-hidden': true }, id === 'chess' ? '♞' : '◉'), h('span', null, h('strong', null, t(id)), h('small', null, t('board'), ' · ', t('square'))))),
+          ...visibleBoards.map(id => h('button', { key: id, type: 'button', 'aria-label': t(id), 'aria-pressed': false, onClick: () => openBoard(id) }, h('span', { className: 'exp-library-icon', 'aria-hidden': true }, { chess: '♞', gomoku: '◉', xiangqi: '帥' }[id]), h('span', null, h('strong', null, t(id)), h('small', null, t('board'), ' · ', t('square'))))),
           !visibleGames.length && !showExpedition && !visibleBoards.length && h('p', { className: 'arcade-empty' }, t('noResults'))),
           h('small', { className: 'arcade-library-tip' }, t('libraryTip'))),
         h('main', { className: 'arcade-play' },

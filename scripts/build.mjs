@@ -12,7 +12,8 @@ const ui = await read('src/ui.js')
 const chessLicense = await read('node_modules/chess.js/LICENSE')
 const chessSource = (await read('node_modules/chess.js/dist/esm/chess.js')).replace(/^export \{.*$/gm, '').replace(/^\/\/# sourceMappingURL=.*$/gm, '').replace(/^[ \t]+/gm, indent => indent.replace(/\t/g, '  '))
 const boardEngine = (await read('src/board-games.js')).replace(/^import .*\r?\n/gm, '').replace(/^export /gm, '')
-const boards = `/* chess.js 1.4.0 — BSD-2-Clause\n${chessLicense}\n*/\nconst BoardChess = (() => {\n${chessSource}\nreturn Chess\n})()\n${boardEngine}\n${await read('src/board-ui.js')}`
+const xiangqi = (await read('src/xiangqi.js')).replace(/^export /gm, '')
+const boards = `/* chess.js 1.4.0 — BSD-2-Clause\n${chessLicense}\n*/\nconst BoardChess = (() => {\n${chessSource}\nreturn Chess\n})()\n${xiangqi}\n${boardEngine}\n${await read('src/board-ui.js')}`
 const terrain = (await read('src/escort-terrain.js')).replace(/^export /gm, '')
 const art = (await read('src/escort-art.js')).replace(/^export /gm, '')
 const taskView = (await read('src/escort-task.js')).replace(/^import .*\r?\n/gm, '').replace(/^export /gm, '')

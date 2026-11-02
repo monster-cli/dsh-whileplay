@@ -9,11 +9,11 @@
 
 Whileplay is a task-linked arcade plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). Your conversation's Todos become island waypoints, tool calls bring interceptors and supplies, completed subagents join your flight, and delivered files board the transport ship. Move, shoot, dodge, and protect the convoy while AI works.
 
-Six games, two ways to spend the wait: Air Battle, Tank Battle, and Snake turn tool activity into targets and supplies. Chess and Gomoku offer a quieter challenge against a local computer opponent or a friend on the same board.
+Seven games, two ways to spend the wait: Air Battle, Tank Battle, and Snake turn tool activity into targets and supplies. Chess, Gomoku, and Xiangqi offer a quieter challenge against a local computer opponent or a friend on the same board.
 
 Keep playing while AI works. When the conversation stops running or needs your input, the game pauses so you can return to it.
 
-[Get started](#quick-start) · [Convoy Escort](#convoy-escort-your-current-task-on-the-battlefield) · [Classic games](#three-games-three-ways-to-play-along) · [Board games](#chess-and-gomoku-a-thoughtful-move-between-replies) · [v0.4.0 changes](docs/releases/v0.4.0.md)
+[Get started](#quick-start) · [Convoy Escort](#convoy-escort-your-current-task-on-the-battlefield) · [Classic games](#three-games-three-ways-to-play-along) · [Board games](#chess-gomoku-and-xiangqi-a-thoughtful-move-between-replies) · [v0.4.0 changes](docs/releases/v0.4.0.md)
 
 ## Why try Whileplay?
 
@@ -57,7 +57,7 @@ npx @deepseek-ai/dsh web
 
 ### Start playing
 
-Open the **complete URL** printed by `dsh web` to authenticate the browser. Click **“◈ Play a little”** beside the chat composer and choose a game. For action and arcade games, choose **“Try task escort”** to explore targets and supplies. For Chess or Gomoku, click **“Start game”** to begin a round.
+Open the **complete URL** printed by `dsh web` to authenticate the browser. Click **“◈ Play a little”** beside the chat composer and choose a game. For action and arcade games, choose **“Try task escort”** to explore targets and supplies. For Chess, Gomoku, or Xiangqi, click **“Start game”** to begin a round.
 
 For live integration, configure your provider credentials in DSH **Settings → Models**, select a model, and run a task. Whileplay follows the current **DSH conversation**, not tasks in other applications, and makes no additional model calls.
 
@@ -117,16 +117,17 @@ Every completed AI step sends a supply worth an extra +20 points when collected.
 
 Destroying a tool aircraft awards +100 points; an armored tool tank, +200. Tool fruit awards +30 and grows the snake by one cell. Snake's double-score effect applies to ordinary food, tool fruit, and supply pickups. Supply lifetimes and active effects freeze while paused.
 
-## Chess and Gomoku: a thoughtful move between replies
+## Chess, Gomoku, and Xiangqi: a thoughtful move between replies
 
-Choose Chess or Gomoku in the library's **Board** category. Play against a casual local computer opponent, or select **Two players** to take turns on the same board. The opponent runs entirely in your browser: no model, API key, or online opponent is required.
+Choose Chess, Gomoku, or Xiangqi in the library's **Board** category. Play against a casual local computer opponent, or select **Two players** to take turns on the same board. The opponent runs entirely in your browser: no model, API key, or online opponent is required.
 
 | Game | Rules and controls | Computer mode |
 | --- | --- | --- |
 | **Chess** | Select a piece to see legal moves, then select a destination. Supports check, checkmate, castling, en passant, and all four promotions | You play White and move first; the computer plays Black. Designed for casual practice |
 | **Gomoku** | Connect five horizontally, vertically, or diagonally on a 15×15 board. Freestyle rules: overlines win, no forbidden moves | You play Black and move first; the computer plays White, pursuing wins and blocking immediate threats |
+| **Xiangqi** | Chinese chess on a 9×10 board. Select a piece to see legal moves; full local rules including horse legs, elephant eyes, cannon screens, river-crossing soldiers, and the flying-general rule. Win by checkmate or stalemate | You play Red and move first; the computer plays Black, validating every move with the built-in rules engine |
 
-Both games include move history, last-move highlights, and undo. Gomoku highlights the winning line. Computer-mode undo returns to before your last move; two-player undo removes one move. Use a mouse or touch, or navigate the board with arrow keys and press Enter to move.
+All three games include move history, last-move highlights, and undo. Gomoku highlights the winning line. Computer-mode undo returns to before your last move; two-player undo removes one move. Use a mouse or touch, or navigate the board with arrow keys and press Enter to move.
 
 **A clear result, an easy rematch.** Computer games show “You win!” or “You lost this round”; two-player games name the winner, and draws have their own result screen. Review the final board or play again immediately. Restarting an unfinished round requires confirmation in a centered dialog.
 
