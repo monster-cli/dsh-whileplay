@@ -1,7 +1,7 @@
 {
   "name": "dsh-whileplay",
   "version": "0.4.0",
-  "description": "Six games for DeepSeek Harness: task-linked arcade battles, convoy escort, Chess and Gomoku in one floating window.",
+  "description": "Seven games for DeepSeek Harness: task-linked arcade battles, convoy escort, Chess, Gomoku and Xiangqi in one floating window.",
   "type": "module",
   "main": "index.js",
   "exports": {

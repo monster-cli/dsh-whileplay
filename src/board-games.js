@@ -1,7 +1,8 @@
 import { Chess as BoardChess } from 'chess.js'
+import { createXiangqi, xiangqiMove, xiangqiUndo, xiangqiResult } from './xiangqi.js'
 
 export function createBoardGame(kind, mode = 'computer') {
-  return { kind, mode, chess: kind === 'chess' ? new BoardChess() : null, cells: Array(225).fill(0), moves: [], winner: 0, line: [] }
+  return { kind, mode, chess: kind === 'chess' ? new BoardChess() : null, xiangqi: kind === 'xiangqi' ? createXiangqi() : null, cells: Array(225).fill(0), moves: [], winner: 0, line: [] }
 }
 export function gomokuLine(cells, at, player) {
   const x = at % 15, y = Math.floor(at / 15)
@@ -23,17 +24,23 @@ export function playGomoku(g, at) {
   if (g.line.length) g.winner = player
   return true
 }
+export function playXiangqi(g, from, to) {
+  if (boardResult(g) || !Number.isInteger(from) || !Number.isInteger(to)) return false
+  return xiangqiMove(g.xiangqi, from, to)
+}
 export function undoBoard(g) {
-  const count = g.kind === 'chess' ? g.chess.history().length : g.moves.length
+  const count = g.kind === 'chess' ? g.chess.history().length : g.kind === 'xiangqi' ? g.xiangqi.history.length : g.moves.length
   const n = g.mode === 'computer' && count % 2 === 0 ? 2 : 1
   for (let i = 0; i < n; i++) {
     if (g.kind === 'chess') g.chess.undo()
+    else if (g.kind === 'xiangqi') xiangqiUndo(g.xiangqi)
     else if (g.moves.length) g.cells[g.moves.pop()] = 0
   }
   g.winner = 0; g.line = []
 }
 export function boardResult(g) {
   if (g.kind === 'gomoku') return g.winner ? (g.winner === 1 ? 'blackWin' : 'whiteWin') : g.moves.length === 225 ? 'draw' : null
+  if (g.kind === 'xiangqi') return xiangqiResult(g.xiangqi)
   if (g.chess.isCheckmate()) return g.chess.turn() === 'w' ? 'blackWin' : 'whiteWin'
   if (g.chess.isStalemate()) return 'stalemate'
   if (g.chess.isDraw()) return 'draw'
@@ -106,17 +113,23 @@ export function chooseChess(chess, maxMs = 220) {
   return { from: best.from, to: best.to, ...(best.promotion ? { promotion: best.promotion } : {}) }
 }
 export function serializeBoard(g) {
-  return JSON.stringify({ version: 1, kind: g.kind, mode: g.mode, moves: g.kind === 'chess' ? g.chess.history() : g.moves })
+  return JSON.stringify({ version: 1, kind: g.kind, mode: g.mode, moves: g.kind === 'chess' ? g.chess.history() : g.kind === 'xiangqi' ? g.xiangqi.history.map(move => move.from * 100 + move.to) : g.moves })
 }
 export function restoreBoard(raw, kind) {
   try {
     if (!raw || raw.length > 40000) return null
     const data = JSON.parse(raw)
-    if (data.version !== 1 || data.kind !== kind || !['computer', 'local'].includes(data.mode) || !Array.isArray(data.moves) || data.moves.length > (kind === 'chess' ? 1200 : 225)) return null
+    const limit = kind === 'chess' ? 1200 : kind === 'xiangqi' ? 600 : 225
+    if (data.version !== 1 || data.kind !== kind || !['computer', 'local'].includes(data.mode) || !Array.isArray(data.moves) || data.moves.length > limit) return null
     const g = createBoardGame(kind, data.mode)
     for (const move of data.moves) {
       if (boardResult(g)) return null
       if (kind === 'chess') { if (typeof move !== 'string' || move.length > 12 || !g.chess.move(move)) return null }
+      else if (kind === 'xiangqi') {
+        if (!Number.isInteger(move) || move < 0 || move >= 9000) return null
+        const from = Math.floor(move / 100), to = move % 100
+        if (to >= 90 || !playXiangqi(g, from, to)) return null
+      }
       else if (!playGomoku(g, move)) return null
     }
     return g
