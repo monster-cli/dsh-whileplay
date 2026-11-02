@@ -1,4 +1,12 @@
 const XQ_GLYPH = { r: { k: '帥', a: '仕', e: '相', n: '馬', r: '車', c: '炮', p: '兵' }, b: { k: '將', a: '士', e: '象', n: '馬', r: '車', c: '砲', p: '卒' } }
+/** Shared text-free mark for the Xiangqi header and its library entry. */
+function xiangqiIcon(className = 'xiangqi-mark') {
+  return h('svg', { className, viewBox: '0 0 40 40', fill: 'none', 'aria-hidden': true, focusable: 'false' },
+    h('path', { d: 'M4 12h32M4 28h32M12 4v32M28 4v32', stroke: 'currentColor', strokeWidth: 1.5, opacity: .55 }),
+    h('circle', { cx: 20, cy: 20, r: 12, fill: 'var(--xiangqi-icon-disc, #fffaf1)', stroke: 'currentColor', strokeWidth: 2 }),
+    h('circle', { cx: 20, cy: 20, r: 9, stroke: 'currentColor', strokeWidth: 1, opacity: .7 }),
+    h('circle', { cx: 20, cy: 20, r: 2.5, fill: 'currentColor' }))
+}
 const xqPoint = at => `${'abcdefghi'[at % 9]}${10 - Math.floor(at / 9)}`
 /** Board lines, palace diagonals, river and star marks as an aligned SVG underlay. */
 function xiangqiBoardLines() {
@@ -32,6 +40,7 @@ function BoardGames({ kind, sessionId, frame, panelRef, onMove, gestureProps, on
   const status = useSessionStatus(snapshot => snapshot.get(sessionId)), previous = useRef(status?.running)
   const blocked = !status || !!status.pendingInteraction, result = boardResult(g)
   const history = kind === 'chess' ? g.chess.history() : kind === 'xiangqi' ? g.xiangqi.history.map(move => `${xqPoint(move.from)}→${xqPoint(move.to)}`) : g.moves.map(at => `${String.fromCharCode(65 + at % 15)}${15 - Math.floor(at / 15)}`)
+  const xiangqiPairs = kind === 'xiangqi' ? Array.from({ length: Math.ceil(history.length / 2) }, (_, index) => ({ number: index + 1, red: history[index * 2], black: history[index * 2 + 1] })).slice(-6) : []
   const botTurn = g.mode === 'computer' && (kind === 'chess' ? g.chess.turn() === 'b' : kind === 'xiangqi' ? g.xiangqi.turn === 'b' : g.moves.length % 2 === 1)
   const active = !paused && !blocked && !result && !confirmMode
   const showResult = !!result && !resultDismissed && !confirmMode && !blocked
@@ -113,12 +122,13 @@ function BoardGames({ kind, sessionId, frame, panelRef, onMove, gestureProps, on
     const x = i % cols, y = Math.floor(i / cols), square = kind === 'chess' ? `${'abcdefgh'[x]}${8 - y}` : i
     const piece = kind === 'chess' ? g.chess.get(square) : kind === 'xiangqi' ? g.xiangqi.board[i] : null, stone = g.cells[i]
     const target = legal.some(move => move.to === square)
-    const marked = kind === 'chess' ? last?.from === square || last?.to === square : kind === 'xiangqi' ? last?.from === i || last?.to === i : last === i
+    const markedFrom = kind === 'xiangqi' && last?.from === i, markedTo = kind === 'xiangqi' && last?.to === i
+    const marked = kind === 'chess' ? last?.from === square || last?.to === square : kind === 'xiangqi' ? markedFrom || markedTo : last === i
     const checked = kind === 'chess' ? piece?.type === 'k' && piece.color === g.chess.turn() && g.chess.isCheck() : kind === 'xiangqi' ? piece?.type === 'k' && piece.color === g.xiangqi.turn && inCheck : false
-    const label = kind === 'chess' ? `${square}${piece ? ` ${piece.color === 'w' ? text('白', 'white ') : text('黑', 'black ')}${pieceNames[piece.type]}` : ''}` : kind === 'xiangqi' ? `${xqPoint(i)}${piece ? ` ${piece.color === 'r' ? text('红', 'red ') : text('黑', 'black ')}${xqNames[piece.type]}` : ''}` : `${String.fromCharCode(65 + x)}${15 - y}${stone ? stone === 1 ? text(' 黑子', ' black') : text(' 白子', ' white') : ''}`
-    return h('button', { type: 'button', key: i, className: `board-cell ${(x + y) % 2 ? 'dark' : 'light'} ${marked ? 'last' : ''} ${selected === square ? 'selected' : ''} ${target ? 'legal' : ''} ${checked ? 'check' : ''} ${g.line.includes(i) ? 'winning' : ''}`,
+    const label = kind === 'chess' ? `${square}${piece ? ` ${piece.color === 'w' ? text('白', 'white ') : text('黑', 'black ')}${pieceNames[piece.type]}` : ''}` : kind === 'xiangqi' ? `${xqPoint(i)}${piece ? ` ${piece.color === 'r' ? text('红', 'red ') : text('黑', 'black ')}${xqNames[piece.type]}` : ''}${selected === i ? text('，已选中', ', selected') : target ? text('，可落子', ', legal move') : ''}` : `${String.fromCharCode(65 + x)}${15 - y}${stone ? stone === 1 ? text(' 黑子', ' black') : text(' 白子', ' white') : ''}`
+    return h('button', { type: 'button', key: i, className: `board-cell ${(x + y) % 2 ? 'dark' : 'light'} ${marked ? 'last' : ''} ${markedFrom ? 'last-from' : ''} ${markedTo ? 'last-to' : ''} ${selected === square ? 'selected' : ''} ${target ? 'legal' : ''} ${checked ? 'check' : ''} ${g.line.includes(i) ? 'winning' : ''}`,
       style: kind === 'gomoku' ? { '--line-left': x === 0 ? '50%' : '0%', '--line-right': x === 14 ? '50%' : '0%', '--line-top': y === 0 ? '50%' : '0%', '--line-bottom': y === 14 ? '50%' : '0%' } : undefined,
-      'aria-label': label, 'aria-disabled': !active || botTurn || !!promotion, tabIndex: cursor === i ? 0 : -1,
+      'aria-label': label, 'aria-pressed': kind === 'xiangqi' ? selected === i : undefined, 'aria-disabled': !active || botTurn || !!promotion, tabIndex: cursor === i ? 0 : -1,
       onFocus: () => setCursor(i), onClick: () => playSquare(square), onKeyDown: event => {
         const delta = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -cols, ArrowDown: cols }[event.key]
         if (delta !== undefined) { event.preventDefault(); event.stopPropagation(); const next = Math.max(0, Math.min(total - 1, i + delta)); setCursor(next); event.currentTarget.parentElement.querySelectorAll('.board-cell')[next].focus() }
@@ -129,17 +139,18 @@ function BoardGames({ kind, sessionId, frame, panelRef, onMove, gestureProps, on
     kind === 'gomoku' && [3, 7, 11].includes(x) && [3, 7, 11].includes(y) && h('i', { className: 'board-star' }),
     kind === 'gomoku' && !!stone && h('span', { className: `board-stone stone-${stone}`, 'aria-hidden': true }))
   })
+  const grid = h('div', { className: `board-grid ${kind}`, role: 'group', 'aria-label': text('棋盘', 'Board') }, kind === 'xiangqi' && xiangqiBoardLines(), ...cells)
   const moveWindow = (event, edge) => { if (event.target.closest('button') && !edge) return; setPaused(true); onMove(event, edge) }
-  return h('section', { ref: panelRef, className: 'arcade-panel board-panel', 'data-compact': compact, 'aria-label': t(kind), style: { left: frame.x, top: frame.y, width: frame.width, height: frame.height },
+  return h('section', { ref: panelRef, className: `arcade-panel board-panel${kind === 'xiangqi' ? ' board-panel--xiangqi' : ''}`, 'data-compact': compact, 'aria-label': t(kind), style: { left: frame.x, top: frame.y, width: frame.width, height: frame.height },
     onBlur: event => { if (!event.currentTarget.contains(event.relatedTarget)) setPaused(true) },
     onKeyDown: event => { if (event.key === 'Escape') { event.stopPropagation(); setPaused(true); setPromotion(null); setConfirmMode(null); if (showResult) setResultDismissed(true) } },
   }, h('header', { className: 'arcade-header', onPointerDown: moveWindow, ...gestureProps },
-    h('span', { className: 'board-header-icon', 'aria-hidden': true }, { chess: '♞', gomoku: '◉', xiangqi: '帥' }[kind]), h('div', { className: 'arcade-heading' }, h('h2', null, t(kind)), !compact && h('p', null, text('落一子，让等待慢下来', 'A thoughtful move between replies'))),
+    h('span', { className: 'board-header-icon', 'aria-hidden': true }, kind === 'xiangqi' ? xiangqiIcon() : { chess: '♞', gomoku: '◉' }[kind]), h('div', { className: 'arcade-heading' }, h('h2', null, t(kind)), !compact && h('p', null, kind === 'xiangqi' ? text('楚河汉界 · 红先黑后', 'Xiangqi · Red moves first') : text('落一子，让等待慢下来', 'A thoughtful move between replies'))),
     h('button', { type: 'button', onClick: () => setCompact(!compact) }, t(compact ? 'restore' : 'minimal')),
     h('button', { type: 'button', onClick: onClose }, text('游戏库', 'Library'))),
-  h('div', { className: 'board-layout' }, h('main', { className: 'board-main', style: { maxWidth: Math.max(180, Math.min(660, frame.height - (compact ? 155 : 205))) } },
-    h('div', { className: 'board-turn', role: 'status' }, h('span', { className: `board-turn-dot ${turnFirst ? (kind === 'xiangqi' ? 'red' : 'white') : 'black'}` }), stateText),
-    h('div', { className: `board-grid ${kind}`, role: 'group', 'aria-label': text('棋盘', 'Board') }, kind === 'xiangqi' && xiangqiBoardLines(), ...cells),
+  h('div', { className: 'board-layout' }, h('main', { className: 'board-main', style: { maxWidth: Math.max(180, Math.min(660, frame.height - (compact ? (kind === 'xiangqi' ? 215 : 155) : 205))) } },
+    h('div', { className: 'board-turn', role: 'status', 'data-check': kind === 'xiangqi' && inCheck }, h('span', { className: `board-turn-dot ${turnFirst ? (kind === 'xiangqi' ? 'red' : 'white') : 'black'}` }), kind === 'xiangqi' && h('span', { className: 'xiangqi-status-label' }, text('棋局状态', 'GAME STATUS')), kind === 'xiangqi' ? h('strong', { className: 'xiangqi-status-text' }, stateText) : stateText, kind === 'xiangqi' && h('span', { className: 'xiangqi-status-round' }, `${text('第', 'Move ')}${Math.floor(history.length / 2) + 1}${text('回合', '')}`)),
+    kind === 'xiangqi' ? h('div', { className: 'xiangqi-board-frame' }, grid) : grid,
     h('div', { className: 'board-controls' }, h('button', { type: 'button', className: 'arcade-primary', disabled: blocked || !!confirmMode, onClick: () => result ? setResultDismissed(false) : setPaused(!paused) }, result ? text('查看结算', 'View result') : paused ? history.length ? t('resume') : text('开始对弈', 'Start game') : t('pause')),
       h('button', { type: 'button', disabled: !history.length || !!confirmMode, onClick: () => { undoBoard(g); changed() } }, text('悔棋', 'Undo')),
       h('button', { type: 'button', onClick: () => requestNew(g.mode) }, text('新的一局', 'New game'))),
@@ -149,8 +160,8 @@ function BoardGames({ kind, sessionId, frame, panelRef, onMove, gestureProps, on
       h('h3', null, g.mode === 'computer' ? (kind === 'xiangqi' ? text('你执红，先行', 'You play Red') : text(kind === 'chess' ? '你执白，先行' : '你执黑，先行', kind === 'chess' ? 'You play White' : 'You play Black')) : text('轮流行棋', 'Take turns')),
       h('p', null, kind === 'chess' ? text('点击棋子查看合法落点，再点击目标格。支持王车易位、吃过路兵与升变。', 'Select a piece to see legal moves. Castling, en passant and promotion are supported.') : kind === 'xiangqi' ? text('点击棋子查看合法落点。马走日、象走田，炮隔子吃子，兵过河后可平移；将死或困毙对方即获胜。', 'Select a piece to see legal moves. Horses move in 日, elephants in 田, cannons capture over a screen, soldiers shift sideways across the river. Win by checkmate or stalemate.') : text('横、竖或斜向连成五子即可获胜。15×15 自由规则，长连也算胜利，无禁手。', 'Connect five horizontally, vertically or diagonally. Freestyle 15×15: overlines win, no forbidden moves.')),
       h('div', { className: 'board-history-heading' }, h('h3', null, text('棋谱', 'Moves')), h('span', null, `${history.length} ${text('手', 'plies')}`)),
-      h('ol', { className: 'board-history', start: Math.max(1, history.length - 11) }, ...history.slice(-12).map((move, i) => h('li', { key: history.length - 12 + i }, move))),
-      h('small', { className: 'board-note' }, text('轻量本地电脑 · 无需 API Key。按会话自动保存；任务结束或需要操作时自动暂停。', 'Casual local opponent · no API key. Saved per session; pauses when the task ends or needs input.')))),
+      kind === 'xiangqi' ? h('ol', { className: 'board-history xiangqi-history', start: xiangqiPairs[0]?.number || 1, 'data-empty': text('尚未落子', 'No moves yet') }, ...xiangqiPairs.map(pair => h('li', { key: pair.number }, h('span', { className: 'xiangqi-move-number' }, String(pair.number).padStart(2, '0')), h('span', { className: 'xiangqi-move-red' }, pair.red), h('span', { className: 'xiangqi-move-black' }, pair.black || '…')))) : h('ol', { className: 'board-history', start: Math.max(1, history.length - 11) }, ...history.slice(-12).map((move, i) => h('li', { key: history.length - 12 + i }, move))),
+      h('small', { className: 'board-note' }, kind === 'xiangqi' ? text('更强的本地电脑棋手 · 无需 API Key。棋局按会话保存，任务结束时自动暂停。', 'A stronger local opponent · no API key. Saved per session and paused when the task ends.') : text('轻量本地电脑 · 无需 API Key。按会话自动保存；任务结束或需要操作时自动暂停。', 'Casual local opponent · no API key. Saved per session; pauses when the task ends or needs input.')))),
     saveError && h('p', { className: 'arcade-hint', role: 'alert' }, t('saveError')),
     showResult && h('div', { className: 'board-result-backdrop' },
       h('div', { className: 'board-result', 'data-result': resultTone, role: 'dialog', 'aria-modal': true, 'aria-label': resultTitle, onKeyDown: trapDialogFocus },

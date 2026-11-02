@@ -105,6 +105,19 @@ test('chooseXiangqi is read-only, takes a hanging rook and finds mate in one', (
   assert.equal(chooseXiangqi(done), null)
 })
 
+test('computer declines a defended cannon and restores state after a short search', () => {
+  // Taking the cannon on (4,4) lets the black rook on (4,0) take the red rook.
+  const trap = custom({ rr: [4, 5], bc: [4, 4], br: [4, 0] })
+  const original = JSON.stringify(trap)
+  const move = chooseXiangqi(trap, 250)
+  assert.notDeepEqual(move, { from: at(4, 5), to: at(4, 4) })
+  assert.equal(xiangqiMovesFrom(trap, move.from).some(candidate => candidate.to === move.to), true)
+  assert.equal(JSON.stringify(trap), original)
+  const hurried = chooseXiangqi(trap, 0)
+  assert.equal(xiangqiMovesFrom(trap, hurried.from).some(candidate => candidate.to === hurried.to), true)
+  assert.equal(JSON.stringify(trap), original)
+})
+
 test('board-games integration: play, reject illegal moves, undo by mode', () => {
   const g = createBoardGame('xiangqi')
   assert.equal(boardResult(g), null)

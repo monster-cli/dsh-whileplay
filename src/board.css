@@ -24,3 +24,166 @@
 .xiangqi .legal:after{content:'';position:absolute;z-index:2;width:22%;height:22%;border-radius:50%;corner-shape:round!important;background:#314e6390;pointer-events:none}
 .xiangqi .legal:has(.xiangqi-piece):after{width:96%;height:96%;background:transparent;border:3px solid #d3b035;box-sizing:border-box}
 .board-turn-dot.red{background:#b3342c}
+
+/* Xiangqi has its own ivory palette and board treatment; other board games retain their theme. */
+.board-panel--xiangqi{
+  --arcade-bg:#fffdf9;
+  --arcade-soft:#f7f3eb;
+  --arcade-border:#ddd3c4;
+  --arcade-text:#2d302e;
+  --arcade-muted:#6f716c;
+  --arcade-hover:#f0e9dd;
+  --arcade-accent:#a83e2d;
+  border-color:#d9cbb8;
+  background:radial-gradient(circle at 4% 0%,#fffefa 0,transparent 32%),linear-gradient(145deg,#fffdf8,#f6f3ec 66%,#f9f6f0);
+  background-color:#f9f7f1;
+  box-shadow:0 22px 58px #3c302d26,0 2px 9px #3c302d12,inset 0 1px #fff;
+}
+.board-panel--xiangqi .arcade-header{
+  padding:14px 20px;
+  border-bottom-color:#e5dacb;
+  background:linear-gradient(100deg,#fffefa,#faf7f0 62%,#f6f1e8);
+  background-color:#fffdf8;
+}
+.board-panel--xiangqi .board-header-icon{
+  display:grid;
+  place-items:center;
+  flex:none;
+  width:38px;
+  height:38px;
+  border:1px solid #d7b59e;
+  border-radius:8px;
+  color:#a43d2d;
+  background:linear-gradient(145deg,#fffefa,#f9eee2);
+  box-shadow:inset 0 0 0 2px #fffaf3,0 2px 6px #503c2c20;
+}
+.board-panel--xiangqi .board-header-icon .xiangqi-mark{display:block;width:29px;height:29px}
+.xiangqi-library-icon{display:grid;place-items:center;width:26px;color:#a43d2d}
+.xiangqi-library-icon .xiangqi-mark{display:block;width:26px;height:26px}
+.board-panel--xiangqi .arcade-heading h2{font-family:'Songti SC','STSong','SimSun',serif;font-size:19px;letter-spacing:.1em;font-weight:700}
+.board-panel--xiangqi .arcade-heading p{margin-top:0;color:#8b7d6c;font-size:11px;letter-spacing:.04em}
+.board-panel--xiangqi .arcade-header>button{background:#fffdf9;border-color:#dcd1c2;color:#53493d;font-size:11px}
+.board-panel--xiangqi .arcade-header>button:hover:not(:disabled){background:#f7eee3;border-color:#c8a78d}
+.board-panel--xiangqi .board-layout{gap:18px;padding:16px 18px 20px}
+.board-panel--xiangqi .board-main{max-width:590px}
+.board-panel--xiangqi .board-turn{
+  display:grid;
+  grid-template-columns:11px minmax(0,1fr) auto;
+  grid-template-rows:13px auto;
+  column-gap:9px;
+  align-items:center;
+  min-height:45px;
+  margin-bottom:10px;
+  padding:7px 11px;
+  border:1px solid #e0d5c5;
+  border-radius:8px;
+  background:linear-gradient(95deg,#fffdf8,#f8f3ea 70%,#f4eee2);
+  background-color:#fffaf4;
+  box-shadow:0 2px 7px #5945300c,inset 0 1px #fff;
+}
+.board-panel--xiangqi .board-turn-dot{grid-column:1;grid-row:1/3;width:9px;height:9px;box-shadow:0 0 0 3px #ede5d8,0 0 0 1px #a99580}
+.board-panel--xiangqi .board-turn-dot.red{background:#b34332}
+.board-panel--xiangqi .board-turn-dot.black{background:#34413e}
+.xiangqi-status-label{grid-column:2;grid-row:1;color:#8c8174;font-size:9px;letter-spacing:.15em;line-height:1}
+.xiangqi-status-text{grid-column:2;grid-row:2;color:#30332f;font-size:13px;font-weight:600;line-height:1.3}
+.xiangqi-status-round{grid-column:3;grid-row:1/3;align-self:center;padding:3px 7px;border:1px solid #ddd0bd;border-radius:4px;background:#fffaf2;color:#786b5b;font:10px/1.3 ui-monospace,monospace;white-space:nowrap}
+.board-panel--xiangqi .board-turn[data-check=true] .xiangqi-status-text{color:#a72e23}
+.xiangqi-board-frame{
+  position:relative;
+  width:100%;
+  padding:8px;
+  border:1px solid #a47a4b;
+  border-radius:9px;
+  background:linear-gradient(145deg,#855d37,#35281d 12%,#715033 50%,#33251c 88%,#906940);
+  box-shadow:0 14px 28px #0008,inset 0 1px #e3b77e80,inset 0 0 0 3px #342319;
+}
+.xiangqi-board-frame::before{content:'';position:absolute;inset:4px;border:1px solid #dab27c66;border-radius:5px;pointer-events:none;z-index:2}
+.board-panel--xiangqi .board-grid.xiangqi{
+  border:1px solid #7d5c36;
+  border-radius:3px;
+  background:radial-gradient(ellipse at 48% 32%,#f7e8c7a8,transparent 68%),repeating-linear-gradient(96deg,#fff9dc18 0 2px,#805c2612 3px 5px,transparent 6px 10px),linear-gradient(120deg,#dfbe83,#eddaaf 48%,#d4ae70);
+  box-shadow:inset 0 0 0 4px #e6c790,inset 0 0 0 5px #8a683e,inset 0 0 22px #78501d8c;
+}
+.board-panel--xiangqi .xiangqi-lines{z-index:0}
+.board-panel--xiangqi .xiangqi-lines path{stroke:#715333;stroke-width:.028;stroke-linecap:square}
+.board-panel--xiangqi .xiangqi-lines .xiangqi-stars{stroke-width:.028}
+.board-panel--xiangqi .xiangqi-lines text{fill:#744b2e;font-size:.5px;letter-spacing:.13px;font-weight:700}
+.board-panel--xiangqi .xiangqi .board-cell{z-index:1;background:transparent}
+.board-panel--xiangqi .xiangqi .board-cell.last,.board-panel--xiangqi .xiangqi .board-cell.selected{box-shadow:none}
+.board-panel--xiangqi .xiangqi .board-cell:hover:not([aria-disabled=true]){background:radial-gradient(circle,#b56e2838,transparent 66%)}
+.board-panel--xiangqi .xiangqi .board-cell:focus-visible{outline:2px solid #a43125!important;outline-offset:-3px;z-index:4}
+.board-panel--xiangqi .xiangqi .board-cell::before{content:'';position:absolute;inset:8%;border-radius:50%;pointer-events:none;opacity:0}
+.board-panel--xiangqi .xiangqi .board-cell.last-from::before{opacity:1;background:#a65f3830;box-shadow:inset 0 0 0 2px #9b632c78}
+.board-panel--xiangqi .xiangqi .board-cell.last-to::before{opacity:1;box-shadow:inset 0 0 0 2px #c8984d}
+.board-panel--xiangqi .xiangqi .board-cell.selected::before{opacity:1;inset:5%;background:#b8492830;box-shadow:inset 0 0 0 2px #a42d23,0 0 0 2px #f4d8a8}
+.board-panel--xiangqi .xiangqi .board-cell.check::before{opacity:1;inset:4%;background:#e0423438;box-shadow:inset 0 0 0 2px #bd3529,0 0 10px #e55636}
+.board-panel--xiangqi .xiangqi-piece{
+  display:grid;
+  place-items:center;
+  width:82%;
+  border:1px solid #977040;
+  border-radius:50%;
+  background:radial-gradient(circle at 34% 26%,#fff9e9,#f3e4c2 52%,#d0aa70 91%);
+  color:#283936;
+  box-shadow:inset 0 1px #fffdf4,inset 0 0 0 3px #f3e5c7,inset 0 0 0 4px #a97c48,0 4px 6px #2c180d80,0 1px 1px #0008;
+  font-family:'Songti SC','STSong','SimSun',serif;
+  font-size:clamp(16px,4.2cqw,31px);
+  font-weight:700;
+  line-height:1;
+  text-shadow:0 1px #fff9e380;
+  transition:transform .16s ease,box-shadow .16s ease;
+}
+.board-panel--xiangqi .xiangqi-piece::before{content:'';position:absolute;inset:5px;border:1px solid currentColor;border-radius:50%;opacity:.52;pointer-events:none}
+.board-panel--xiangqi .xiangqi-piece.r{color:#aa342a;border-color:#bd8159}
+.board-panel--xiangqi .xiangqi-piece.b{color:#2b403e;border-color:#7d815f}
+.board-panel--xiangqi .xiangqi .board-cell.selected .xiangqi-piece{transform:translateY(-2px);box-shadow:inset 0 1px #fffdf4,inset 0 0 0 3px #f3e5c7,inset 0 0 0 4px #a97c48,0 6px 9px #2c180d99,0 0 0 2px #f5dbae}
+.board-panel--xiangqi .xiangqi .board-cell.check .xiangqi-piece{background:radial-gradient(circle at 34% 26%,#fff5df,#f5d6ad 58%,#dba579);box-shadow:inset 0 0 0 3px #f8e3bf,inset 0 0 0 4px #b46a44,0 0 0 3px #c63f31,0 5px 8px #25180d80}
+.board-panel--xiangqi .xiangqi .board-cell.legal::after{z-index:2;width:28%;height:28%;border:1px solid #f6dfb0;border-radius:50%;background:#aa522eaa;box-shadow:0 0 0 2px #84452a66}
+.board-panel--xiangqi .xiangqi .board-cell.legal:has(.xiangqi-piece)::after{width:92%;height:92%;border:3px solid #bc442e;background:transparent;box-shadow:0 0 0 2px #f6d7a7,inset 0 0 0 1px #ffdfb2}
+.board-panel--xiangqi .board-controls{justify-content:flex-start;gap:8px;margin-top:12px}
+.board-panel--xiangqi .board-controls button{padding:8px 13px;border-color:#d9cbbb;border-radius:7px;background:#fffefa;color:#51483c;font-size:12px;font-weight:600;box-shadow:0 1px 3px #5945300c}
+.board-panel--xiangqi .board-controls button:hover:not(:disabled){background:#f9efe3;border-color:#bd9e7e}
+.board-panel--xiangqi .board-controls .arcade-primary{border-color:#a83f2f;background:linear-gradient(135deg,#b84c35,#94342a);color:#fffaf0;box-shadow:inset 0 1px #ffc09d66,0 3px 9px #6c2d2524}
+.board-panel--xiangqi .board-controls .arcade-primary:hover:not(:disabled){background:linear-gradient(135deg,#d05c3e,#a4382d)}
+.board-panel--xiangqi .board-sidebar{width:185px;padding:3px 0 0 17px;border-left:1px solid #e0d4c3;color:#67665d;line-height:1.55}
+.board-panel--xiangqi .board-mode{gap:2px;padding:3px;border:1px solid #e1d6c7;border-radius:8px;background:#f5f0e8}
+.board-panel--xiangqi .board-mode button{min-width:0;padding:6px 4px;border:0;border-radius:5px;background:transparent;color:#6a6257;font-size:11px;white-space:nowrap}
+.board-panel--xiangqi .board-mode button:hover:not(:disabled){background:#ede3d5}
+.board-panel--xiangqi .board-mode button[aria-pressed=true]{background:#fffdf8;color:#a43d2d;box-shadow:0 1px 3px #6d4c3324,inset 0 0 0 1px #e3d3c0}
+.board-panel--xiangqi .board-sidebar h3{margin:15px 0 7px;color:#30332f;font-family:'Songti SC','STSong','SimSun',serif;font-size:14px;letter-spacing:.06em}
+.board-panel--xiangqi .board-sidebar>p{margin:0;padding:10px 11px;border:1px solid #e5d9c9;border-radius:7px;background:#fffdf8;color:#65665e;font-size:11px;line-height:1.65}
+.board-panel--xiangqi .board-history-heading{margin-top:6px;border-bottom:1px solid #ded3c2}
+.board-panel--xiangqi .board-history-heading h3{margin:10px 0 9px}
+.board-panel--xiangqi .board-history-heading>span{color:#8a8275;font-size:10px}
+.board-panel--xiangqi .xiangqi-history{display:flex;flex-direction:column;gap:4px;min-height:75px;margin:8px 0 12px;padding:0;list-style:none}
+.board-panel--xiangqi .xiangqi-history:empty::before{content:attr(data-empty);display:grid;place-items:center;min-height:65px;border:1px dashed #d5c4ae;border-radius:5px;color:#918779;font-size:11px;line-height:1.3}
+.board-panel--xiangqi .xiangqi-history li{display:grid;grid-template-columns:19px minmax(0,1fr) minmax(0,1fr);gap:4px;align-items:center;padding:5px 4px;border:1px solid #e6dccc;border-radius:5px;background:#fffdf8;color:#3a3d38;font:10px/1.2 ui-monospace,SFMono-Regular,monospace;font-variant-numeric:tabular-nums;white-space:nowrap}
+.board-panel--xiangqi .xiangqi-history li:last-child{border-color:#ceae91;background:#fff6ec}
+.xiangqi-move-number{color:#918678}
+.xiangqi-move-red{color:#a4382c}
+.xiangqi-move-black{color:#34413e}
+.board-panel--xiangqi .board-note{border-top-color:#e0d4c3;color:#777267;font-size:10px;line-height:1.6}
+.board-panel--xiangqi .board-result,.board-panel--xiangqi .board-confirm-backdrop .board-confirm{border-color:#d9c8b5;background:#fffdf8;color:#30332f;box-shadow:0 24px 60px #3a2b2829}
+.board-panel--xiangqi .board-result-actions .arcade-primary{background:#a74332;color:#fffaf0}
+.board-panel--xiangqi .board-result-actions .arcade-primary:hover:not(:disabled){background:#bf533c}
+.board-panel--xiangqi .board-result-backdrop,.board-panel--xiangqi .board-confirm-backdrop{background:#27221b75}
+@container arcade-window (max-width:620px){
+  .board-panel--xiangqi .arcade-header{gap:8px;padding:10px 12px}
+  .board-panel--xiangqi .board-header-icon{width:31px;height:31px}
+  .board-panel--xiangqi .board-header-icon .xiangqi-mark{width:24px;height:24px}
+  .board-panel--xiangqi .arcade-heading h2{font-size:16px}
+  .board-panel--xiangqi .arcade-heading p{font-size:10px}
+  .board-panel--xiangqi .board-layout{flex-direction:column;gap:14px;padding:11px 12px 16px}
+  .board-panel--xiangqi .board-main{width:100%}
+  .board-panel--xiangqi .board-sidebar{display:grid;grid-template-columns:1fr 1fr;gap:0 10px;width:100%;padding:11px 0 0;border-left:0;border-top:1px solid #e0d4c3}
+  .board-panel--xiangqi .board-mode,.board-panel--xiangqi .board-sidebar>h3,.board-panel--xiangqi .board-sidebar>p,.board-panel--xiangqi .board-history-heading,.board-panel--xiangqi .board-history,.board-panel--xiangqi .board-note{grid-column:1/-1}
+  .board-panel--xiangqi .board-sidebar h3{margin:9px 0 6px}
+}
+@container arcade-window (max-width:440px){
+  .board-panel--xiangqi .board-turn{grid-template-columns:9px minmax(0,1fr) auto;padding:6px 8px}
+  .board-panel--xiangqi .xiangqi-status-round{padding:2px 4px;font-size:9px}
+  .board-panel--xiangqi .xiangqi-board-frame{padding:6px}
+  .board-panel--xiangqi .board-controls{gap:5px}
+  .board-panel--xiangqi .board-controls button{padding:7px 8px;font-size:11px}
+}
+@media(prefers-reduced-motion:reduce){.board-panel--xiangqi .xiangqi-piece{transition:none}}

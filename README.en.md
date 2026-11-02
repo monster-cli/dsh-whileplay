@@ -119,15 +119,15 @@ Destroying a tool aircraft awards +100 points; an armored tool tank, +200. Tool 
 
 ## Chess, Gomoku, and Xiangqi: a thoughtful move between replies
 
-Choose Chess, Gomoku, or Xiangqi in the library's **Board** category. Play against a casual local computer opponent, or select **Two players** to take turns on the same board. The opponent runs entirely in your browser: no model, API key, or online opponent is required.
+Choose Chess, Gomoku, or Xiangqi in the library's **Board** category. Play against a local computer opponent, or select **Two players** to take turns on the same board. The opponent runs entirely in your browser: no model, API key, or online opponent is required.
 
 | Game | Rules and controls | Computer mode |
 | --- | --- | --- |
 | **Chess** | Select a piece to see legal moves, then select a destination. Supports check, checkmate, castling, en passant, and all four promotions | You play White and move first; the computer plays Black. Designed for casual practice |
 | **Gomoku** | Connect five horizontally, vertically, or diagonally on a 15×15 board. Freestyle rules: overlines win, no forbidden moves | You play Black and move first; the computer plays White, pursuing wins and blocking immediate threats |
-| **Xiangqi** | Chinese chess on a 9×10 board. Select a piece to see legal moves; full local rules including horse legs, elephant eyes, cannon screens, river-crossing soldiers, and the flying-general rule. Win by checkmate or stalemate | You play Red and move first; the computer plays Black, validating every move with the built-in rules engine |
+| **Xiangqi** | Chinese chess on a 9×10 board. Select a piece to see legal moves; local rules cover horse legs, elephant eyes, cannon screens, river-crossing soldiers, and the flying-general rule. Win by checkmate or stalemate | You play Red and move first; the computer plays Black. Its search deepens progressively, evaluates piece positions, and extends captures and checks, with a default budget of about 650 ms per move |
 
-All three games include move history, last-move highlights, and undo. Gomoku highlights the winning line. Computer-mode undo returns to before your last move; two-player undo removes one move. Use a mouse or touch, or navigate the board with arrow keys and press Enter to move.
+All three games include move history, last-move highlights, and undo. Gomoku highlights the winning line. Xiangqi has its own board, pieces, river, and move indicators. Computer-mode undo returns to before your last move; two-player undo removes one move. Use a mouse or touch, or navigate the board with arrow keys and press Enter to move.
 
 **A clear result, an easy rematch.** Computer games show “You win!” or “You lost this round”; two-player games name the winner, and draws have their own result screen. Review the final board or play again immediately. Restarting an unfinished round requires confirmation in a centered dialog.
 

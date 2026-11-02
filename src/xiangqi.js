@@ -199,42 +199,128 @@ export function xiangqiResult(state) {
   return state.turn === RED ? 'blackWin' : 'redWin'
 }
 
-const XIANGQI_VALUE = { k: 0, r: 600, c: 300, n: 270, e: 25, a: 25, p: 60 }
+const XIANGQI_VALUE = { k: 20000, r: 950, c: 500, n: 420, e: 115, a: 110, p: 90 }
+const XIANGQI_MATE = 100000
+const SEARCH_TIMEOUT = Symbol('xiangqi search timeout')
 
-/** Bounded local search, same shape as chooseChess: read-only, 1 ply + opponent replies. */
-export function chooseXiangqi(state, maxMs = 220) {
-  if (xiangqiResult(state)) return null
-  const end = Date.now() + maxMs, color = state.turn
+/** Iterative alpha-beta search with capture/check continuations. Search never changes history. */
+export function chooseXiangqi(state, maxMs = 650) {
+  const rootMoves = xiangqiMoves(state)
+  if (!rootMoves.length) return null
+  const end = Date.now() + Math.max(0, Number.isFinite(maxMs) ? maxMs : 650)
+  const history = new Int32Array(90 * 90)
+  const killers = Array.from({ length: 16 }, () => [-1, -1])
+  let nodes = 0
+
+  const key = move => move.from * 90 + move.to
+  const moveScore = (move, ply, preferred = -1) => {
+    const id = key(move)
+    if (id === preferred) return 2000000
+    if (move.captured) return 1000000 + XIANGQI_VALUE[move.captured.type] * 16 - XIANGQI_VALUE[state.board[move.from].type]
+    if (killers[ply]?.includes(id)) return 500000
+    return history[id]
+  }
+  const ordered = (moves, ply, preferred = -1) => moves.sort((a, b) => moveScore(b, ply, preferred) - moveScore(a, ply, preferred))
+  const make = move => {
+    state.board[move.to] = state.board[move.from]
+    state.board[move.from] = null
+    state.turn = state.turn === RED ? BLACK : RED
+  }
+  const unmake = move => {
+    state.turn = state.turn === RED ? BLACK : RED
+    state.board[move.from] = state.board[move.to]
+    state.board[move.to] = move.captured
+  }
+  const checkTime = () => { if ((++nodes & 15) === 0 && Date.now() >= end) throw SEARCH_TIMEOUT }
   const evaluate = () => {
-    let value = 0
-    state.board.forEach((piece, at) => {
-      if (!piece) return
-      const x = at % XIANGQI_FILES, y = Math.floor(at / XIANGQI_FILES)
-      const crossed = piece.type === 'p' && !ownSide(y, piece.color) ? 30 : 0
-      const central = (4 - Math.abs(x - 4)) * (piece.type === 'n' || piece.type === 'c' ? 3 : 1)
-      value += (piece.color === color ? 1 : -1) * (XIANGQI_VALUE[piece.type] + crossed + central)
-    })
-    return value
-  }
-  const moves = xiangqiMoves(state).sort((a, b) => (XIANGQI_VALUE[b.captured?.type] || 0) - (XIANGQI_VALUE[a.captured?.type] || 0))
-  let best = moves[0], bestValue = -Infinity
-  for (const move of moves) {
-    applyMove(state, move)
-    let value = evaluate(), complete = true
-    if (xiangqiResult(state)) value = 100000
-    else {
-      value = Infinity
-      for (const reply of xiangqiMoves(state)) {
-        applyMove(state, reply)
-        value = Math.min(value, xiangqiResult(state) ? -100000 : evaluate())
-        xiangqiUndo(state)
-        if (value <= bestValue) break
-        if (Date.now() > end) { complete = false; break }
-      }
+    let score = 0
+    for (let at = 0; at < 90; at++) {
+      const piece = state.board[at]
+      if (!piece) continue
+      const x = at % 9, y = Math.floor(at / 9)
+      const center = 4 - Math.abs(x - 4)
+      const advance = piece.color === RED ? 9 - y : y
+      let positional = 0
+      if (piece.type === 'p') positional = advance * 5 + (advance >= 5 ? 45 + center * 8 : 0)
+      else if (piece.type === 'n') positional = center * 12 + Math.min(advance, 6) * 5
+      else if (piece.type === 'c') positional = center * 7 + Math.min(advance, 5) * 3
+      else if (piece.type === 'r') positional = center * 4 + Math.min(advance, 6) * 2
+      else if (piece.type === 'k') positional = -advance * 8
+      const value = XIANGQI_VALUE[piece.type] + positional
+      score += piece.color === RED ? value : -value
     }
-    xiangqiUndo(state)
-    if (complete && value > bestValue) { bestValue = value; best = move }
-    if (Date.now() > end) break
+    return state.turn === RED ? score : -score
   }
-  return best ? { from: best.from, to: best.to } : null
+  const quiescence = (alpha, beta, ply, remaining) => {
+    checkTime()
+    // A check or stalemate must be recognized before using a static evaluation.
+    const inCheck = xiangqiAttacked(state.board, state.turn)
+    const moves = xiangqiMoves(state)
+    if (!moves.length) return -XIANGQI_MATE + ply
+    const standPat = evaluate()
+    if (!inCheck) {
+      if (standPat >= beta) return standPat
+      if (standPat > alpha) alpha = standPat
+      if (remaining <= 0) return alpha
+    } else if (remaining < -1) return standPat
+    const tactical = inCheck ? moves : moves.filter(move => move.captured)
+    ordered(tactical, ply)
+    for (const move of tactical) {
+      make(move)
+      let score
+      try { score = -quiescence(-beta, -alpha, ply + 1, remaining - 1) }
+      finally { unmake(move) }
+      if (score >= beta) return score
+      if (score > alpha) alpha = score
+    }
+    return alpha
+  }
+  const search = (depth, alpha, beta, ply) => {
+    checkTime()
+    if (depth <= 0) return quiescence(alpha, beta, ply, 3)
+    const moves = xiangqiMoves(state)
+    if (!moves.length) return -XIANGQI_MATE + ply
+    ordered(moves, ply)
+    for (const move of moves) {
+      make(move)
+      let score
+      try { score = -search(depth - 1, -beta, -alpha, ply + 1) }
+      finally { unmake(move) }
+      if (score >= beta) {
+        if (!move.captured && ply < killers.length) {
+          const id = key(move)
+          if (killers[ply][0] !== id) killers[ply] = [id, killers[ply][0]]
+          history[id] += depth * depth
+        }
+        return score
+      }
+      if (score > alpha) alpha = score
+    }
+    return alpha
+  }
+
+  ordered(rootMoves, 0)
+  let best = rootMoves[0], preferred = -1
+  for (let depth = 1; depth <= 6; depth++) {
+    let candidate = best, candidateScore = -Infinity, alpha = -XIANGQI_MATE
+    ordered(rootMoves, 0, preferred)
+    try {
+      for (const move of rootMoves) {
+        checkTime()
+        make(move)
+        let score
+        try { score = -search(depth - 1, -XIANGQI_MATE, -alpha, 1) }
+        finally { unmake(move) }
+        if (score > candidateScore) { candidateScore = score; candidate = move }
+        if (score > alpha) alpha = score
+      }
+    } catch (error) {
+      if (error !== SEARCH_TIMEOUT) throw error
+      break // A partly searched depth cannot replace the last complete result.
+    }
+    best = candidate
+    preferred = key(best)
+    if (candidateScore >= XIANGQI_MATE - 6 || Date.now() >= end) break
+  }
+  return { from: best.from, to: best.to }
 }
